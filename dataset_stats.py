@@ -16,9 +16,16 @@ if __name__ == "__main__":
 
     for df in data_iter:
         for column in df.select_dtypes(include=['number']).columns:
+            if column == 'Cn0DbHz':
+                # linear scale for Cn0DbHz (column is in dB-Hz which is logarithmic and we want linear for input to NN) 
+                df[column] = 10 ** (df[column] / 10)
+
             max_value = abs(df[column].max())
             if column not in stats or max_value > stats[column]:
-                stats[column] = max_value
+                if column == 'Cn0DbHz':
+                    stats[f"{column}_linear"] = max_value
+                else:
+                    stats[column] = max_value
 
         print(f"Processed file: {data_iter.get_current_file()}")
 
