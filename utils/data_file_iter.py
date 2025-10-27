@@ -30,15 +30,13 @@ class Data_file_iter:
             while self.phone_index < len(self.phone_names):
                 phone_name = self.phone_names[self.phone_index]
                 self.current_file = f"{drive_path}/{phone_name}/device_gnss.csv"
+                # self.current_file = f"./smartphone-decimeter-2022/train/2020-06-10-US-MTV-2/GooglePixel4XL/device_gnss.csv"
                 self.phone_index += 1
-
-                try:
-                    df = pd.read_csv(self.current_file)
-                    return df
-                except FileNotFoundError:
+                truth = self.get_truth_file()
+                if truth["AltitudeMeters"].isna().any():
                     continue
-                except pd.errors.EmptyDataError:
-                    continue
+                df = pd.read_csv(self.current_file)
+                return df
 
             self.drive_index += 1
             self.phone_names = []
@@ -47,3 +45,8 @@ class Data_file_iter:
     
     def get_current_file(self) -> str:
         return self.current_file
+    
+    def get_truth_file(self) -> pd.DataFrame:
+        truth_file = self.current_file.replace("device_gnss.csv", "ground_truth.csv")
+        truth_df = pd.read_csv(truth_file)
+        return truth_df
