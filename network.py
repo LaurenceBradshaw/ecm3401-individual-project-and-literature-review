@@ -4,6 +4,9 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from torch import nn
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+torch.set_default_device(device)
+
 class Pseudorange_residual_encoder(nn.Module):
     def __init__(self, lstm_hidden: int = 32, lstm_layers: int = 1, attn_dim: int = 64, dropout: float = 0.1):
         super().__init__()
@@ -36,6 +39,7 @@ class Pseudorange_residual_encoder(nn.Module):
         # Each row becomes a sequence of N "timesteps" (satellites) with 1 feature
         # Shape: (N_rows, seq_len, feat_dim) = (N, N, 1)
         sequences = M.unsqueeze(-1)
+        sequences
 
         # Run all rows through the shared Bi-LSTM
         lstm_out, _ = self.lstm(sequences) # (N, N, 2 * hidden)

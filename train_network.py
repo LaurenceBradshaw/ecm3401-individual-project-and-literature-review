@@ -7,6 +7,9 @@ from network import Network
 import torch
 import torch.nn as nn
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+torch.set_default_device(device)
+
 L1_MIN = 1.55e9
 L1_MAX = 1.61e9
 
@@ -16,7 +19,7 @@ if __name__ == "__main__":
 
     dataset_stats = pd.read_csv(f"{base_path}/dataset_stats.csv")
 
-    net = Network(78)
+    net = Network(78).to(device)
     for name, param in net.named_parameters():
         print(name, param.requires_grad)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
@@ -155,7 +158,7 @@ if __name__ == "__main__":
                     x[:3] = curr_pos["position"]
                     x[3] = curr_pos["clock_bias"]
                     res = gp.pr_residuals(x, sat_pos, pr)
-                    residuals.append(res)
+                    residuals.append(res / abs(res).mean())
                 assert max(len(r) for r in residuals) == min(len(r) for r in residuals), "All residual arrays must be the same length"
 
                 # Construct tensor of other features
@@ -273,6 +276,7 @@ if __name__ == "__main__":
             # weights = torch.stack(weights)  # (B, N, N)
 
             positions_batch = []
+            positions_baseline_batch = []
             for i in range(len(residuals_batch)):
                 pr = torch.tensor(df[df['epoch_id'] == epoch_ids[i]]['CorrectedPseudorange'].to_numpy(), dtype=torch.float32)
                 prr = torch.tensor(df[df['epoch_id'] == epoch_ids[i]]['CorrectedPseudorangeRateMetersPerSecond'].to_numpy(), dtype=torch.float32)
@@ -280,14 +284,18 @@ if __name__ == "__main__":
                 sat_vel = torch.tensor(df[df['epoch_id'] == epoch_ids[i]][['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']].to_numpy(), dtype=torch.float32)
 
                 count = sat_pos.shape[0]
+                baseline_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, prev_estimate=curr_pos)
                 curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=weights[i], prev_estimate=curr_pos)
                 positions_batch.append(curr_pos['position'])
+                positions_baseline_batch.append(baseline_pos['position'])
 
             positions_batch = torch.stack(positions_batch).to(torch.float32)  # (B, 3)
+            positions_baseline_batch = torch.stack(positions_baseline_batch).to(torch.float32)  # (B, 3)
 
             # Compute loss (e.g., RMSE between predicted and truth positions)
             loss = torch.sqrt(torch.mean((positions_batch - truth_positions) ** 2))
-            print(f"Batch {batch_id+1} loss: {loss.item():.3f} meters")
+            baseline_loss = torch.sqrt(torch.mean((positions_baseline_batch - truth_positions) ** 2))
+            print(f"Batch {batch_id+1} loss: {loss.item():.3f} meters, baseline: {baseline_loss.item():.3f} meters, diff: {baseline_loss.item() - loss.item():.3f}")
 
             # Backpropagation and optimizer step would go here
             optimizer.zero_grad()
@@ -299,6 +307,8 @@ if __name__ == "__main__":
                 'clock_bias': curr_pos['clock_bias'].detach(),
                 'clock_drift': curr_pos['clock_drift'].detach()
             }
+
+    torch.save(net, "weight_network.nwk")
         
 
 

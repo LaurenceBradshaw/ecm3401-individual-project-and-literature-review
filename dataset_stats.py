@@ -13,6 +13,7 @@ if __name__ == "__main__":
     output_file = f"{base_path}/dataset_stats.csv"
     stats = {}
     data_iter = Data_file_iter(base_path, split='train')
+    mp_counter = 0
 
     for df in data_iter:
         for column in df.select_dtypes(include=['number']).columns:

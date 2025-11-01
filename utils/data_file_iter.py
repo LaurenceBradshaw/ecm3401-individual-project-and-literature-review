@@ -14,12 +14,13 @@ class Data_file_iter:
         self.phone_names = []
         self.phone_index = 0
         self.current_file = ""
+        self.abs_counter = 0
 
     def __iter__(self) -> Data_file_iter:
         return self
 
     def __next__(self) -> pd.DataFrame:
-        while self.drive_index < len(self.drive_ids):
+        while self.drive_index < len(self.drive_ids):# and self.abs_counter < 5:
             drive_id = self.drive_ids[self.drive_index]
             drive_path = f"{self.base_path}/{self.split}/{drive_id}"
 
@@ -36,6 +37,7 @@ class Data_file_iter:
                 if truth["AltitudeMeters"].isna().any():
                     continue
                 df = pd.read_csv(self.current_file)
+                self.abs_counter += 1
                 return df
 
             self.drive_index += 1
