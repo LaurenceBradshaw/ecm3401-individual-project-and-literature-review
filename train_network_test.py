@@ -58,8 +58,15 @@ if __name__ == "__main__":
         # Note: Last batch may have less than 50 epochs.
         df['batch_id'] = df['epoch_id'] // 50
 
+
+        # Parametric rejection
+        # df = df[(df['Cn0DbHz'] > 30) & (df['SvElevationDegrees'] > 5)]
+        
+        # Remove non-L1 rows
+        df = df[(df['CarrierFrequencyHz'] >= L1_MIN) & (df['CarrierFrequencyHz'] <= L1_MAX)]
+
         # Exclude epochs with less than 4 satellites (cannot compute position)
-        valid_epochs = df.groupby('epoch_id').filter(lambda x: len(x) >= 4)
+        valid_epochs = df.groupby('epoch_id').filter(lambda x: len(x) >= 5) # 5 to be able to compute n-1 residuals
         df = valid_epochs
 
         # Drop rows with missing essential data
@@ -76,13 +83,7 @@ if __name__ == "__main__":
             'SvAzimuthDegrees',
             'Cn0DbHz'
         ])
-
-        # Remove non-L1 rows
-        df = df[(df['CarrierFrequencyHz'] >= L1_MIN) & (df['CarrierFrequencyHz'] <= L1_MAX)]
         df.sort_values(['utcTimeMillis', 'ConstellationType', 'Svid'], inplace=True)
-
-        # Parametric rejection
-        df = df[(df['Cn0DbHz'] > 30) & (df['SvElevationDegrees'] > 5)]
 
         # Apply iono, tropo and sv clock corrections to pseudorange
         df['CorrectedPseudorange'] = df['RawPseudorangeMeters'] - df['IonosphericDelayMeters'] - df['TroposphericDelayMeters'] + df['SvClockBiasMeters']
@@ -110,20 +111,39 @@ if __name__ == "__main__":
         )
         max_window_size = 10
         df["window_size"] = (df["lock_time"] + 1).clip(upper=max_window_size)
-        df['cumulative_Cn0DbHz_linear'] = (
-            df.groupby(['ConstellationType', 'Svid', 'sighting_id'])['Cn0DbHz_linear']
-            .cumsum()
-        )
-        df["mean_Cn0DbHz_linear"] = df['cumulative_Cn0DbHz_linear'] / df['window_size']
-        df['var_Cn0DbHz_linear'] = (
-            df.groupby(['ConstellationType', 'Svid', 'sighting_id'])['Cn0DbHz_linear']
-            .apply(lambda x: x.expanding(min_periods=1).var(ddof=0))
-        )
+        # df['cumulative_Cn0DbHz_linear'] = (
+        #     df.groupby(['ConstellationType', 'Svid', 'sighting_id'])['Cn0DbHz_linear']
+        #     .cumsum()
+        # )
+        # df["mean_Cn0DbHz_linear"] = df['cumulative_Cn0DbHz_linear'] / df['window_size']
+        # df['var_Cn0DbHz_linear'] = (
+        #     df.groupby(['ConstellationType', 'Svid', 'sighting_id'])['Cn0DbHz_linear']
+        #     .apply(lambda x: x.expanding(min_periods=1).var(ddof=0))
+        # )
+
+        def compute_satellite_windows(group: pd.DataFrame) -> pd.DataFrame:
+            mean_cn0_list = []
+            var_cn0_list = []
+            for i in range(len(group)):
+                w = group.iloc[i]['window_size']
+                start_idx = max(0, i - w + 1)
+                window = group.iloc[start_idx:i+1]['Cn0DbHz_linear']
+                mean_cn0_list.append(window.mean())
+                var_cn0_list.append(window.var(ddof=0))  # population variance
+
+            group['mean_Cn0DbHz_linear'] = mean_cn0_list
+            group['var_Cn0DbHz_linear'] = var_cn0_list
+            return group
+        
+        df = df.groupby(['ConstellationType', 'Svid'], group_keys=False).apply(compute_satellite_windows)
 
         df['window_size'] /= max_window_size
 
         df['pseudorange_double_diff'] = double_diff(df, "CorrectedPseudorange")
         df['cn0_double_diff'] = double_diff(df, "Cn0DbHz_linear")
+
+        df['residual_matrix'] = None
+        df['residual_matrix'] = df['residual_matrix'].astype(object)
 
         curr_pos = None
         for epoch_id, epoch_df in df.groupby('epoch_id'):
@@ -145,6 +165,33 @@ if __name__ == "__main__":
 
             df.loc[epoch_df.index, 'residual'] = res
 
+            N = len(epoch_df)
+            res_matrix = np.full((N, N-1), np.nan)
+            # For each satellite, exclude it and compute position with remaining satellites
+            i = 0
+            for idx, sat_row in epoch_df.iterrows():
+                excluded_sat = (sat_row['ConstellationType'], sat_row['Svid'])
+                included_sats = epoch_df[
+                    ~((epoch_df['ConstellationType'] == excluded_sat[0]) & (epoch_df['Svid'] == excluded_sat[1]))
+                ]
+                assert included_sats.shape[0] == epoch_df.shape[0] - 1, "Only one satellite should be excluded"
+
+                # Get pseudoranges and satellite positions
+                pr = included_sats['CorrectedPseudorange'].to_numpy()
+                prr = included_sats['CorrectedPseudorangeRateMetersPerSecond'].to_numpy()
+                sat_pos = included_sats[['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']].to_numpy()
+                sat_vel = included_sats[['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']].to_numpy()
+
+                # Compute receiver position using least squares with no weighting
+                curr_pos = gp.position(pr, prr, sat_pos, sat_vel, prev_estimate=curr_pos)
+
+                # Compute residual for all included satellites
+                x = np.zeros(4)
+                x[:3] = curr_pos["position"]
+                x[3] = curr_pos["clock_bias"]
+                res = gp.pr_residuals(x, sat_pos, pr)
+                df.at[idx, 'residual_matrix'] = res / abs(res).mean()
+
         features = [
             'Cn0DbHz_linear',          # linearised signal strength
             'mean_Cn0DbHz_linear',     # mean linearised signal strength
@@ -161,6 +208,7 @@ if __name__ == "__main__":
             'cn0_double_diff',         # time based cn0 double difference
         ]
         batches = []
+        residuals_batched = []
         lengths = []
         pos_truths = []
         epoch_batch_ids = []
@@ -170,6 +218,7 @@ if __name__ == "__main__":
         # iterate batches (B)
         for batch_id, batch_df in df.groupby('batch_id', sort=True):
             epoch_list = []
+            epoch_residuals = []
             epoch_lengths = []
             epoch_truth_list = []
             epoch_ids = []
@@ -184,8 +233,10 @@ if __name__ == "__main__":
                 epoch_list.append(t)
                 epoch_lengths.append(t.shape[0])
                 epoch_ids.append(epoch_id)
+                epoch_residuals.append(torch.tensor(epoch_df['residual_matrix'], dtype=torch.float32, device=device))
 
             batches.append(epoch_list)
+            residuals_batched.append(epoch_residuals)
             lengths.append(epoch_lengths)
             pos_truths.append(epoch_truth_list)
             epoch_batch_ids.append(epoch_ids)
@@ -206,7 +257,7 @@ if __name__ == "__main__":
         curr_pos["clock_drift"] = torch.tensor(curr_pos["clock_drift"], dtype=torch.float32)
 
         for i in range(len(batches)):
-            weights_batch = net(batches[i])
+            weights_batch = net(batches[i], residuals_batched[i])
 
             positions_batch = []
             positions_baseline_batch = []

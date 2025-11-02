@@ -343,8 +343,8 @@ def position(
     H_pos = jacobian_residuals(pos_output, sat_pos)
     dop = calculate_dop(pos_output[:3], H_pos, Wx)
     if dop["pdop"] > 10.0:
-        print(f"Rejecting poor quality solution: PDOP {dop['pdop']:.1f}")
-        return prev_estimate
+        print(f"Warning: poor quality solution: PDOP {dop['pdop']:.1f}")
+        # return prev_estimate
 
     # Initial guess for velocity
     v0 = np.zeros(4)

@@ -10,6 +10,17 @@ class Satellite_weight_network(nn.Module):
     def __init__(self, input_dim: int = 13, hidden_dim: int = 64, lstm_layers: int = 2, dropout: float = 0.1):
         super().__init__()
 
+        bidirectional = False
+
+        self.res_enc = nn.LSTM(
+            input_size=1,
+            hidden_size=hidden_dim,
+            num_layers=lstm_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            dropout=dropout if lstm_layers > 1 else 0.0
+        )
+
         # Simple feed-forward embedding
         self.input_fc = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -19,37 +30,43 @@ class Satellite_weight_network(nn.Module):
             nn.ReLU()
         )
 
-        bidirectional = False
-        bi_multi = 2 if bidirectional else 1
-
         # BiLSTM to model relationships between satellites within each epoch
         self.lstm = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
             num_layers=lstm_layers,
             batch_first=True,
-            bidirectional=True,
+            bidirectional=bidirectional,
             dropout=dropout if lstm_layers > 1 else 0.0
         )
 
         # Attention projection
-        self.attn_fc = nn.Linear(bi_multi * hidden_dim, 1, bias=False)
+        self.attn_fc = nn.Linear(lstm_layers * hidden_dim, 1, bias=False)
 
         # Output layer: predict weight (bounded 0–1)
         self.output_fc = nn.Sequential(
-            nn.Linear((2 * bi_multi) * hidden_dim, hidden_dim),
+            nn.Linear((2 * lstm_layers) * hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
 
-    def forward(self, batch_sat_data: list[torch.Tensor]) -> torch.Tensor:
+    def forward(self, batch_sat_data: list[torch.Tensor], residual_matrix: list[torch.Tensor]) -> torch.Tensor:
         """
         Args:
-            batch_sat_data: list of tensors [(N_i, F)], where F=8, one per epoch.
+            batch_sat_data: list of tensors [(N_i, F)]
+            residual_matrix: list of tensors [(N_i, N_i-1)] for N_i - 1 pseudorange residuals
 
         Returns:
             weights_diag: list of (N_i, N_i) diagonal matrices of predicted weights.
         """
+        # TODO: last dim of residual_matrix needs transposing before padding
+        # currently [(N_i, N_i-1)] and since each row needs processing individually
+        # for each N_i take the N_i-1 dim, and transpose since this is what the 
+        # lstm for encoding is expecting. (N_i-1, 1)
+        # will need padding in the N_i dimension (Not the N_i-1 dimension) because
+        # the size of it will change across each element in the list
+        # could it be better to remove the N_i dimension so when padded it becomes (B, N_max-1, 1)
+        # and then add the N_i dimension back after?
 
         device = next(self.parameters()).device
         lengths = [x.shape[0] for x in batch_sat_data]
