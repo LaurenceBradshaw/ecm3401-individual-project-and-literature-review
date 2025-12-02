@@ -1,6 +1,6 @@
 import pandas as pd
 import os
-from utils.data_file_iter import Data_file_iter
+from data_file_iter import Data_file_iterator
 
 # Iterate through all device_gnss.csv files in the training dataset
 # and compute the maximum value for each numeric column across the dataset
@@ -9,10 +9,10 @@ from utils.data_file_iter import Data_file_iter
 # These values will be used later for normalisation during model training
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2022"
+    base_path = "./smartphone-decimeter-2023/sdc2023"
     output_file = f"{base_path}/dataset_stats.csv"
     stats = {}
-    data_iter = Data_file_iter(base_path, split='train')
+    data_iter = Data_file_iterator(base_path, split='train')
     mp_counter = 0
 
     for df in data_iter:

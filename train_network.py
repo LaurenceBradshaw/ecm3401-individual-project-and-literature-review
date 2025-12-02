@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from utils.data_file_iter import Data_file_iter
+from data_file_iter import Data_file_iterator
 import utils.gnss_positioning as gp
 from utils.coord_systems import lla_to_ecef, ecef_to_lla
 from network import Network
@@ -14,8 +14,8 @@ L1_MIN = 1.55e9
 L1_MAX = 1.61e9
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2022"
-    data_iter = Data_file_iter(base_path, split='train')
+    base_path = "./smartphone-decimeter-2023/sdc2023"
+    data_iter = Data_file_iterator(base_path, split='train')
 
     dataset_stats = pd.read_csv(f"{base_path}/dataset_stats.csv")
 

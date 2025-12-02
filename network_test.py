@@ -7,10 +7,11 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_device(device)
 
 class Satellite_weight_network(nn.Module):
-    def __init__(self, input_dim: int = 13, hidden_dim: int = 64, lstm_layers: int = 2, dropout: float = 0.1):
+    def __init__(self, input_dim: int = 13, hidden_dim: int = 128, lstm_layers: int = 2, dropout: float = 0.1):
         super().__init__()
 
         bidirectional = False
+        bi_multi = 2 if bidirectional else 1
 
         self.res_enc = nn.LSTM(
             input_size=1,
@@ -32,7 +33,7 @@ class Satellite_weight_network(nn.Module):
 
         # BiLSTM to model relationships between satellites within each epoch
         self.lstm = nn.LSTM(
-            input_size=hidden_dim,
+            input_size=hidden_dim + hidden_dim, # combined feature + residual embeddings
             hidden_size=hidden_dim,
             num_layers=lstm_layers,
             batch_first=True,
@@ -41,16 +42,26 @@ class Satellite_weight_network(nn.Module):
         )
 
         # Attention projection
-        self.attn_fc = nn.Linear(lstm_layers * hidden_dim, 1, bias=False)
+        self.attn_fc = nn.Linear(bi_multi * hidden_dim, 1, bias=False)
 
         # Output layer: predict weight (bounded 0–1)
-        self.output_fc = nn.Sequential(
-            nn.Linear((2 * lstm_layers) * hidden_dim, hidden_dim),
+        # Weight prediction branch
+        self.weight_fc = nn.Sequential(
+            nn.Linear((2 * bi_multi) * hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
 
-    def forward(self, batch_sat_data: list[torch.Tensor], residual_matrix: list[torch.Tensor]) -> torch.Tensor:
+        # Pseudorange correction branch
+        self.prc_fc = nn.Sequential(
+            nn.Linear((2 * bi_multi) * hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+        self.prc_scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, batch_sat_data: list[torch.Tensor], residual_matrix: list[torch.Tensor]) -> tuple[list[torch.Tensor],list[torch.Tensor]]:
         """
         Args:
             batch_sat_data: list of tensors [(N_i, F)]
@@ -59,15 +70,6 @@ class Satellite_weight_network(nn.Module):
         Returns:
             weights_diag: list of (N_i, N_i) diagonal matrices of predicted weights.
         """
-        # TODO: last dim of residual_matrix needs transposing before padding
-        # currently [(N_i, N_i-1)] and since each row needs processing individually
-        # for each N_i take the N_i-1 dim, and transpose since this is what the 
-        # lstm for encoding is expecting. (N_i-1, 1)
-        # will need padding in the N_i dimension (Not the N_i-1 dimension) because
-        # the size of it will change across each element in the list
-        # could it be better to remove the N_i dimension so when padded it becomes (B, N_max-1, 1)
-        # and then add the N_i dimension back after?
-
         device = next(self.parameters()).device
         lengths = [x.shape[0] for x in batch_sat_data]
         n_max = max(lengths)
@@ -83,6 +85,23 @@ class Satellite_weight_network(nn.Module):
         # Encode features
         x = self.input_fc(padded)  # (B, N_max, hidden_dim)
 
+        res_embeds = []
+        for res_mat in residual_matrix:
+            n_i = res_mat.shape[0]
+            sat_embeds = []
+
+            for j in range(n_i): # encode rows of residual matrix
+                seq = res_mat[j].reshape(-1, 1).unsqueeze(0).to(device)  # (1, N_i-1, 1)
+                _, (h_n, _) = self.res_enc(seq)  # h_n: (num_layers, 1, hidden_dim)
+                sat_embeds.append(h_n[-1].squeeze(0))  # (hidden_dim,)
+
+            res_embeds.append(torch.stack(sat_embeds, dim=0))  # (N_i, hidden_dim)
+
+        # Pad residual embeddings to (B, N_max, hidden_dim)
+        res_padded = pad_sequence(res_embeds, batch_first=True).to(device)
+
+        x = torch.cat([x, res_padded], dim=-1)  # combine feature and residual embeddings
+
         # Pack sequence to ignore padding during LSTM
         packed = pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
         packed_out, _ = self.lstm(packed)
@@ -96,15 +115,28 @@ class Satellite_weight_network(nn.Module):
 
         # Combine contextual + pooled info for prediction
         combined = torch.cat([lstm_out, attn_pooled.expand_as(lstm_out)], dim=-1)
-        combined = self.output_fc(combined).squeeze(-1)  # (B, N_max)
 
-        # Mask invalid (padded) positions and bound to (0,1)
-        combined = combined.masked_fill(~masks, 0.0)
-        weights = 1 / (1 + torch.abs(combined))  # smooth bounded weight
+        weight_logits = self.weight_fc(combined).squeeze(-1)
+        weight_logits = weight_logits.masked_fill(~masks, 0.0)
+        weights = 1 / (1 + torch.abs(weight_logits))
 
-        # Build diagonal weight matrices
+
         weights_diag = [
             torch.diag_embed(weights[i, :n]) for i, n in enumerate(lengths)
         ]
 
-        return weights_diag
+        for i, w in enumerate(weights_diag):
+            d = torch.diagonal(w)
+            d = d / (d.mean() + 1e-6)
+            d_clamped = torch.clamp(d, 1e-3, 1e3)
+            weights_diag[i] = torch.diag_embed(d_clamped)
+
+        pr_corrections = self.prc_fc(combined).squeeze(-1)
+        pr_corrections = pr_corrections.masked_fill(~masks, 0.0)
+        pr_corrections = pr_corrections * self.prc_scale
+
+        pr_corrections_list = [
+            pr_corrections[i, :n] for i, n in enumerate(lengths)
+        ]
+
+        return weights_diag, pr_corrections_list

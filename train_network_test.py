@@ -1,12 +1,18 @@
 import numpy as np
 import pandas as pd
-from utils.data_file_iter import Data_file_iter
+from data_file_iter import Data_file_iterator
 import utils.gnss_positioning as gp
 from utils.coord_systems import lla_to_ecef, ecef_to_lla
 from network_test import Satellite_weight_network
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+
+# suppress type checking for pandas DataFrame
+# its annoying
+from typing import Any
+df: Any = ...
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_device(device)
@@ -37,15 +43,37 @@ def double_diff(df: pd.DataFrame, col: str) -> pd.Series:
     return df[f'{col}_double_diff']
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2022"
-    data_iter = Data_file_iter(base_path, split='train')
+    base_path = "./smartphone-decimeter-2023/sdc2023"
+    data_iter = Data_file_iterator(base_path, split='train', limit=10)
 
     dataset_stats = pd.read_csv(f"{base_path}/dataset_stats.csv")
 
-    net = Satellite_weight_network().to(device)
+    features = [
+        'Cn0DbHz_linear',          # linearised signal strength
+        # 'mean_Cn0DbHz_linear',     # mean linearised signal strength
+        # 'var_Cn0DbHz_linear',      # variance of linearised signal strength
+        # 'window_size',             # window size to compute above
+        'sin_elevation',           # sat geometry
+        'cos_elevation',           # sat geometry
+        # 'sin_azimuth',             # sat geometry
+        # 'cos_azimuth',             # sat geometry
+        'seen_t_minus_1',          # binary flag
+        'age_since_last_obs',      # scalar
+        'residual',                # pseudorange residual (from WLS)
+        # 'pseudorange_double_diff', # time based pseudorange double difference
+        # 'cn0_double_diff',         # time based cn0 double difference
+        'pr_unc_norm'              # normalized pseudorange uncertainty
+    ]
+
+    net = Satellite_weight_network(input_dim=len(features)).to(device)
     for name, param in net.named_parameters():
         print(name, param.requires_grad)
-    optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
+    log_var_pos = torch.zeros(1, requires_grad=True, device=device)
+    log_var_corr = torch.zeros(1, requires_grad=True, device=device)
+    optimizer = torch.optim.AdamW(
+        list(net.parameters()) + [log_var_pos, log_var_corr],
+        lr=1e-4, weight_decay=1e-4
+    )
 
     for df in data_iter:
         print(f"Pre-processing file: {data_iter.get_current_file()}")
@@ -122,20 +150,24 @@ if __name__ == "__main__":
         # )
 
         def compute_satellite_windows(group: pd.DataFrame) -> pd.DataFrame:
-            mean_cn0_list = []
+            mean_cn0_linear_list = []
+            var_cn0_linear_list = []
             var_cn0_list = []
             for i in range(len(group)):
                 w = group.iloc[i]['window_size']
                 start_idx = max(0, i - w + 1)
-                window = group.iloc[start_idx:i+1]['Cn0DbHz_linear']
-                mean_cn0_list.append(window.mean())
-                var_cn0_list.append(window.var(ddof=0))  # population variance
+                window_linear = group.iloc[start_idx:i+1]['Cn0DbHz_linear']
+                window = group.iloc[start_idx:i+1]['Cn0DbHz']
+                mean_cn0_linear_list.append(window_linear.mean())
+                var_cn0_linear_list.append(window_linear.var(ddof=0))  # population variance
+                var_cn0_list.append(window.var(ddof=0))
 
-            group['mean_Cn0DbHz_linear'] = mean_cn0_list
-            group['var_Cn0DbHz_linear'] = var_cn0_list
+            group['mean_Cn0DbHz_linear'] = mean_cn0_linear_list
+            group['var_Cn0DbHz_linear'] = var_cn0_linear_list
+            group['var_Cn0DbHz'] = var_cn0_list
             return group
         
-        df = df.groupby(['ConstellationType', 'Svid'], group_keys=False).apply(compute_satellite_windows)
+        df = df.groupby(['ConstellationType', 'Svid'], group_keys=False).apply(compute_satellite_windows, include_groups=True)
 
         df['window_size'] /= max_window_size
 
@@ -164,6 +196,7 @@ if __name__ == "__main__":
             res = res / abs(res).mean()
 
             df.loc[epoch_df.index, 'residual'] = res
+            df.loc[epoch_df.index, 'pr_unc_norm'] = epoch_df['RawPseudorangeUncertaintyMeters'] / np.max(np.abs(epoch_df['RawPseudorangeUncertaintyMeters']))
 
             N = len(epoch_df)
             res_matrix = np.full((N, N-1), np.nan)
@@ -192,21 +225,6 @@ if __name__ == "__main__":
                 res = gp.pr_residuals(x, sat_pos, pr)
                 df.at[idx, 'residual_matrix'] = res / abs(res).mean()
 
-        features = [
-            'Cn0DbHz_linear',          # linearised signal strength
-            'mean_Cn0DbHz_linear',     # mean linearised signal strength
-            'var_Cn0DbHz_linear',      # variance of linearised signal strength
-            'window_size',             # window size to compute above
-            'sin_elevation',           # sat geometry
-            'cos_elevation',           # sat geometry
-            'sin_azimuth',             # sat geometry
-            'cos_azimuth',             # sat geometry
-            'seen_t_minus_1',          # binary flag
-            'age_since_last_obs',      # scalar
-            'residual',                # pseudorange residual (from WLS)
-            'pseudorange_double_diff', # time based pseudorange double difference
-            'cn0_double_diff',         # time based cn0 double difference
-        ]
         batches = []
         residuals_batched = []
         lengths = []
@@ -233,7 +251,7 @@ if __name__ == "__main__":
                 epoch_list.append(t)
                 epoch_lengths.append(t.shape[0])
                 epoch_ids.append(epoch_id)
-                epoch_residuals.append(torch.tensor(epoch_df['residual_matrix'], dtype=torch.float32, device=device))
+                epoch_residuals.append(torch.tensor(np.stack(epoch_df['residual_matrix'].to_numpy(), dtype=np.float32), dtype=torch.float32, device=device))
 
             batches.append(epoch_list)
             residuals_batched.append(epoch_residuals)
@@ -257,29 +275,63 @@ if __name__ == "__main__":
         curr_pos["clock_drift"] = torch.tensor(curr_pos["clock_drift"], dtype=torch.float32)
 
         for i in range(len(batches)):
-            weights_batch = net(batches[i], residuals_batched[i])
+            weights_batch, corrections_batch = net(batches[i], residuals_batched[i])
 
+            truth_positions = torch.tensor(pos_truths[i], dtype=torch.float32)
             positions_batch = []
             positions_baseline_batch = []
+            truth_residuals_batch = []
             for j in range(len(weights_batch)):
                 pr = torch.tensor(df[df['epoch_id'] == epoch_batch_ids[i][j]]['CorrectedPseudorange'].to_numpy(), dtype=torch.float32)
                 prr = torch.tensor(df[df['epoch_id'] == epoch_batch_ids[i][j]]['CorrectedPseudorangeRateMetersPerSecond'].to_numpy(), dtype=torch.float32)
                 sat_pos = torch.tensor(df[df['epoch_id'] == epoch_batch_ids[i][j]][['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']].to_numpy(), dtype=torch.float32)
                 sat_vel = torch.tensor(df[df['epoch_id'] == epoch_batch_ids[i][j]][['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']].to_numpy(), dtype=torch.float32)
 
-                baseline_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, prev_estimate=curr_pos)
+                pr = pr + corrections_batch[j]
+
+                # var_cn0 = df[df['epoch_id'] == epoch_batch_ids[i][j]]['var_Cn0DbHz'].to_numpy()
+                pr_unc = df[df['epoch_id'] == epoch_batch_ids[i][j]]['RawPseudorangeUncertaintyMeters'].to_numpy()
+
+                # Avoid division by zero or massive weights
+                baseline_weights = 1.0 / (pr_unc + 1e-6)
+
+                # Rescale to mean 1 for stability
+                baseline_weights /= np.mean(baseline_weights)
+
+                # Add a floor (so no weight is too small)
+                baseline_weights = np.maximum(baseline_weights, 0.05)
+
+                baseline_weights_diag = torch.diag(torch.tensor(baseline_weights, dtype=torch.float32))
+
+                baseline_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=baseline_weights_diag, prev_estimate=curr_pos)
                 curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=weights_batch[j], prev_estimate=curr_pos)
                 positions_batch.append(curr_pos['position'])
                 positions_baseline_batch.append(baseline_pos['position'])
+
+                clock_bias = curr_pos['clock_bias']  # scalar tensor
+                x_truth = torch.cat([truth_positions[j], clock_bias.unsqueeze(0)], dim=0)  # (4,)
+                truth_residuals = gp.pr_residuals_torch(x_truth, sat_pos, pr)  # (N,)
+                truth_residuals_batch.append(truth_residuals)
             
             positions_batch = torch.stack(positions_batch).to(torch.float32)  # (B, 3)
             positions_baseline_batch = torch.stack(positions_baseline_batch).to(torch.float32)  # (B, 3)
-            truth_positions = torch.tensor(pos_truths[i], dtype=torch.float32)
+            truth_residuals_padded = pad_sequence(truth_residuals_batch, batch_first=True, padding_value=0.0)  # (B, N_max)
+            corrections_batch_padded = pad_sequence(corrections_batch, batch_first=True, padding_value=0.0)
+            lengths = [t.shape[0] for t in truth_residuals_batch]
+            mask = torch.zeros_like(truth_residuals_padded, dtype=torch.bool)
+            for k, l in enumerate(lengths):
+                mask[k, :l] = True
 
             # Compute loss (e.g., RMSE between predicted and truth positions)
-            loss = torch.sqrt(torch.mean((positions_batch - truth_positions) ** 2))
+            # loss = torch.sqrt(torch.mean((positions_batch - truth_positions) ** 2))
+            pos_loss = F.smooth_l1_loss(positions_batch, truth_positions, beta=1.0)
+            residual_loss = F.mse_loss(corrections_batch_padded, -truth_residuals_padded)
+            residual_loss = (residual_loss * mask).sum() / mask.sum()
             baseline_loss = torch.sqrt(torch.mean((positions_baseline_batch - truth_positions) ** 2))
-            print(f"Batch {i+1} loss: {loss.item():.3f} meters, baseline: {baseline_loss.item():.3f} meters, diff: {baseline_loss.item() - loss.item():.3f}")
+            loss = torch.exp(-log_var_pos) * pos_loss + log_var_pos + torch.exp(-log_var_corr) * residual_loss + log_var_corr
+            print(f"Batch {i+1} pos loss: {pos_loss.item():.3f} meters, baseline: {baseline_loss.item():.3f} meters, diff: {baseline_loss.item() - pos_loss.item():.3f}")
+            print(f"Batch {i+1} residual loss: {residual_loss.item():.3f} meters")
+            print(f"Total loss: {loss.item():.3f}")
 
             # Backpropagation and optimizer step would go here
             optimizer.zero_grad()
@@ -294,5 +346,6 @@ if __name__ == "__main__":
             }
     
     torch.save(net.state_dict(), "weight_network.pt")
+    print("Training complete, model saved")
 
 

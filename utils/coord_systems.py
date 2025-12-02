@@ -105,3 +105,39 @@ def ecef_to_neu(ecef, ref_ecef):
 def neu_to_ecef(neu, ref_ecef):
     R = neu_to_ecef_rot(ref_ecef)
     return R @ neu + ref_ecef
+
+def heading_speed_to_ecef(heading_deg, speed_m_s, lat_deg, lon_deg):
+    # Convert everything to numpy arrays
+    heading = np.atleast_1d(np.asarray(heading_deg, dtype=float))
+    speed = np.atleast_1d(np.asarray(speed_m_s, dtype=float))
+    lat = np.atleast_1d(np.asarray(lat_deg, dtype=float))
+    lon = np.atleast_1d(np.asarray(lon_deg, dtype=float))
+
+    # Radians
+    heading_rad = np.deg2rad(heading)
+    lat_rad = np.deg2rad(lat)
+    lon_rad = np.deg2rad(lon)
+
+    # Precompute trig
+    sin_lat = np.sin(lat_rad)
+    cos_lat = np.cos(lat_rad)
+    sin_lon = np.sin(lon_rad)
+    cos_lon = np.cos(lon_rad)
+
+    # East and North unit vectors
+    east = np.stack([-sin_lon, cos_lon, np.zeros_like(lon_rad)], axis=1)
+    north = np.stack([
+        -sin_lat * cos_lon,
+        -sin_lat * sin_lon,
+        cos_lat
+    ], axis=1)
+
+    # Direction vector (broadcasted automatically)
+    sin_h = np.sin(heading_rad)[:, None]
+    cos_h = np.cos(heading_rad)[:, None]
+    dir_ecef = sin_h * east + cos_h * north
+
+    # Apply speed
+    v_ecef = speed[:, None] * dir_ecef
+    
+    return v_ecef[0]

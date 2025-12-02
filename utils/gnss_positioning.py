@@ -213,6 +213,7 @@ def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torc
         HTH = H_w.T @ H_w               # (n, n)
         HTr = H_w.T @ r_w               # (n,)
         delta = -torch.linalg.solve(HTH, HTr)
+        # delta = -torch.linalg.lstsq(H_w, r_w).solution
 
         v = v + delta
 
@@ -471,3 +472,113 @@ def position_torch(
     }
 
     return new_pos
+
+class Kalman_filter:
+    def __init__(
+        self,
+        dt=1.0,
+        sigma_acc=0.5,  # m/s^2 accel noise
+        sigma_p=3.0,    # m GPS pos noise
+        sigma_v=0.1,    # m/s GPS vel noise
+        sigma_b=10.0,   # m clock bias std dev
+        sigma_d=1.0,    # m/s clock drift std dev
+        sigma_p0=10.0,  # initial pos uncertainty
+        sigma_v0=2.0,   # initial vel uncertainty
+        sigma_b0=100.0, # initial clock bias uncertainty
+        sigma_d0=10.0,  # initial clock drift uncertainty
+    ):
+        self.initialised_ = False
+        self.dt_ = dt
+
+        I3 = np.eye(3)
+        Z3 = np.zeros((3, 3))
+
+        # State transition F (8x8)
+        self.F_ = np.eye(8)
+        self.F_[0:3, 3:6] = dt * I3  # position depends on velocity
+        self.F_[6, 7] = dt           # clock bias depends on drift
+
+        # Observation H (8x8) – measuring state directly
+        self.H_ = np.eye(8)
+
+        # Process noise Q (8x8)
+        self.Q_ = np.zeros((8, 8))
+
+        q11 = (dt**4) / 4.0 * I3
+        q12 = (dt**3) / 2.0 * I3
+        q22 = (dt**2) * I3
+
+        self.Q_[0:3, 0:3] = q11
+        self.Q_[0:3, 3:6] = q12
+        self.Q_[3:6, 0:3] = q12
+        self.Q_[3:6, 3:6] = q22
+        self.Q_[6, 6] = sigma_b * sigma_b
+        self.Q_[7, 7] = sigma_d * sigma_d
+
+        self.Q_[0:6, 0:6] *= (sigma_acc * sigma_acc)
+
+        # Measurement noise R (8x8)
+        self.R_ = np.zeros((8, 8))
+        for i in range(3):
+            self.R_[i, i] = sigma_p * sigma_p
+            self.R_[i + 3, i + 3] = sigma_v * sigma_v
+
+        self.R_[6, 6] = sigma_b * sigma_b
+        self.R_[7, 7] = sigma_d * sigma_d
+
+        # Initial state
+        self.x_ = np.zeros((8, 1))
+
+        # Initial covariance P (8x8)
+        self.P_ = np.zeros((8, 8))
+        for i in range(3):
+            self.P_[i, i] = sigma_p0 * sigma_p0
+            self.P_[i + 3, i + 3] = sigma_v0 * sigma_v0
+
+        self.P_[6, 6] = sigma_b0 * sigma_b0
+        self.P_[7, 7] = sigma_d0 * sigma_d0
+
+    def initialise(self, pos, vel, clock_bias, clock_drift):
+        self.x_[0:3, 0] = pos
+        self.x_[3:6, 0] = vel
+        self.x_[6, 0] = clock_bias
+        self.x_[7, 0] = clock_drift
+        self.initialised_ = True
+
+    def predict(self):
+        if not self.initialised_:
+            return
+
+        self.x_ = self.F_.dot(self.x_)
+        self.P_ = self.F_.dot(self.P_).dot(self.F_.T) + self.Q_
+
+    def update(self, pos, vel, clock_bias, clock_drift):
+        if not self.initialised_:
+            self.initialise(pos, vel, clock_bias, clock_drift)
+
+        z = np.zeros((8, 1))
+        z[0:3, 0] = pos
+        z[3:6, 0] = vel
+        z[6, 0] = clock_bias
+        z[7, 0] = clock_drift
+
+        y = z - self.H_.dot(self.x_)
+
+        S = self.H_.dot(self.P_).dot(self.H_.T) + self.R_
+        K = self.P_.dot(self.H_.T).dot(np.linalg.inv(S))
+
+        self.x_ = self.x_ + K.dot(y)
+        I = np.eye(8)
+        self.P_ = (I - K.dot(self.H_)).dot(self.P_)
+
+    def get_position(self):
+        return self.x_[0:3, 0].copy()
+
+    def get_velocity(self):
+        return self.x_[3:6, 0].copy()
+
+    def get_clock_bias(self):
+        return float(self.x_[6, 0])
+
+    def get_clock_drift(self):
+        return float(self.x_[7, 0])
