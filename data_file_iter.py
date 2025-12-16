@@ -29,8 +29,6 @@ class Data_file_iterator:
             for phone_name in os.listdir(drive_path):
                 if preprocessed:
                     file_path = os.path.join(drive_path, phone_name, "device_gnss_preprocessed.csv")
-                    # if not os.path.exists(file_path):  # cant do this here due to the limitations set when reading the file in __next__()
-                        # assert False, f"Preprocessed file {file_path} does not exist. Set preprocessed=False or run preprocess.py first."
                 else:
                     file_path = os.path.join(drive_path, phone_name, "device_gnss.csv")
                 truth_file = os.path.join(drive_path, phone_name, "ground_truth.csv")
@@ -39,6 +37,8 @@ class Data_file_iterator:
                 self.all_files.append(file_path)
 
         # Shuffle with a seed
+        # Need to shuffle otherwise during training, the same drive but on different phones would be processed sequentially
+        # This would lead to overfitting on that drive route
         random.seed(seed)
         random.shuffle(self.all_files)
 
@@ -56,7 +56,7 @@ class Data_file_iterator:
             self.file_index += 1
 
             # Load truth file
-            truth = self.get_truth_file()
+            truth = pd.read_csv(os.path.join(os.path.dirname(self.current_file), "ground_truth.csv"))
             if truth["AltitudeMeters"].isna().any():
                 continue # skip files with missing ground truth altitude
 
@@ -65,19 +65,15 @@ class Data_file_iterator:
                 continue # skip files with no multipath at all
 
             self.abs_counter += 1
-            return df
+            return df, truth
 
         raise StopIteration
 
-    def get_current_file(self) -> str:
+    def get_current_file_path(self) -> str:
         return self.current_file
-
-    def get_truth_file(self) -> pd.DataFrame:
-        truth_file = os.path.join(os.path.dirname(self.current_file), "ground_truth.csv")
-        return pd.read_csv(truth_file)
     
     def get_stats_file(self) -> pd.DataFrame:
         stats_file = os.path.join(self.base_path, "dataset_stats.csv")
         if not os.path.exists(stats_file):
-            assert False, "Dataset stats file does not exist. Run preprocess.py or dataset_stats.py first."
+            assert False, "Dataset stats file does not exist. Run preprocess.py first."
         return pd.read_csv(stats_file)
