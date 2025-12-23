@@ -9,113 +9,115 @@ from torch.nn.utils.rnn import pad_sequence
 from utils.coord_systems import lla_to_ecef, ecef_to_lla, heading_speed_to_ecef
 import utils.gnss_positioning as gp
 import math
+import folium
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_device(device)
-
-SPEED_OF_LIGHT = 299792458.0
-C = SPEED_OF_LIGHT
-
-def compute_wavelength(carrier_frequency_hz):
-    return C / float(carrier_frequency_hz)
-
-def timestamps_seconds(time_nanos, full_bias_nanos, time_offset_nanos):
-    t = np.array(time_nanos, dtype=np.float64)
-    to = np.array(time_offset_nanos, dtype=np.float64)
-    return (t - float(full_bias_nanos) + to) * 1e-9
-
-def cn0_to_linear(cn0_db_hz):
-    cn0 = np.array(cn0_db_hz, dtype=np.float64)
-    return 10.0 ** (cn0 / 10.0)
-
-def reconstruct_phase_from_adr(adr_m, carrier_frequency_hz):
-    lam = compute_wavelength(carrier_frequency_hz)
-    adr = np.array(adr_m, dtype=np.float64)
-
-    delta_adr = np.diff(adr, prepend=adr[0])
-    delta_phi = 2.0 * math.pi * (delta_adr / lam)
-
-    phase_unwrapped = np.cumsum(delta_phi)
-    phase_wrapped = (phase_unwrapped + math.pi) % (2.0 * math.pi) - math.pi
-
-    return phase_unwrapped, phase_wrapped
-
-def reconstruct_phase_from_rate(pr_rate_m_s, timestamps_s, carrier_frequency_hz):
-    lam = compute_wavelength(carrier_frequency_hz)
-    pr_rate = np.array(pr_rate_m_s, dtype=np.float64)
-
-    phase_rate = -2.0 * math.pi * pr_rate / lam
-    dt = np.diff(timestamps_s, prepend=timestamps_s[0])
-
-    phase_unwrapped = np.cumsum(phase_rate * dt)
-    phase_wrapped = (phase_unwrapped + math.pi) % (2.0 * math.pi) - math.pi
-
-    return phase_unwrapped, phase_wrapped
-
-def differentiate(phi, timestamps_s):
-    # robust derivative for irregular timestamps (returns rad/s)
-    ts = np.array(timestamps_s, dtype=np.float64)
-    phi = np.array(phi, dtype=np.float64)
-    dt = np.diff(ts, prepend=ts[0])
-    # protect against zero dt (leave derivative zero)
-    dt[dt == 0] = np.nan
-    dphi = np.diff(phi, prepend=phi[0])
-    dphi_dt = dphi / dt
-    # replace nan with zero
-    dphi_dt = np.nan_to_num(dphi_dt)
-    return dphi_dt
+L1_MIN = 1.55e9
+L1_MAX = 1.61e9
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023"
 
-    data_iter = Data_file_iterator(base_path, split='train', limit=10)
+    data_iter = Data_file_iterator(base_path, split='train', limit=10, prefix='2022-02-24-18-29-us-ca-lax-o', preprocessed=True)
+    first = True
+    for df, truth_df in data_iter:
+        if first:
+            first = False
+            continue
+        print(f"Evaluating file: {data_iter.get_current_file_path()}")
+        df = df[(df['CarrierFrequencyHz'] >= L1_MIN) & (df['CarrierFrequencyHz'] <= L1_MAX)]
+        curr_pos = None
+        df = df.dropna(subset=[
+            'RawPseudorangeMeters',
+            'PseudorangeRateMetersPerSecond',
+            'SvPositionXEcefMeters',
+            'SvPositionYEcefMeters',
+            'SvPositionZEcefMeters',
+            'SvVelocityXEcefMetersPerSecond',
+            'SvVelocityYEcefMetersPerSecond',
+            'SvVelocityZEcefMetersPerSecond',
+            'SvElevationDegrees',
+            'SvAzimuthDegrees',
+            'Cn0DbHz'
+        ])
+        df["epoch_id"] = df.groupby('utcTimeMillis').ngroup()
+        N = df['epoch_id'].nunique()
 
-    for df in data_iter:
-        # for epoch_id, epoch_df in df.groupby('epoch_id'):
-        #     print(f"Epoch ID: {epoch_id}")
+        df['CorrectedPseudorange'] = df['RawPseudorangeMeters'] - df['IonosphericDelayMeters'] - df['TroposphericDelayMeters'] - df['IsrbMeters'] + df['SvClockBiasMeters']
+        df['CorrectedPseudorangeRateMetersPerSecond'] = df['PseudorangeRateMetersPerSecond'] + df['SvClockDriftMetersPerSecond']
 
-                    # group by satellite
-        for (constel, svid), sat_df in df.groupby(['ConstellationType', 'Svid']):
+        estimated_positions = np.zeros((N, 3))
+        sat_trajectories = {}
 
-            # extract numpy arrays for convenience
-            time_nanos = sat_df["TimeNanos"].values
-            full_bias_nanos = sat_df["FullBiasNanos"].values[0]
-            time_offset_nanos = sat_df["TimeOffsetNanos"].values
-            cn0_db_hz = sat_df["Cn0DbHz"].values
-            adr_m = sat_df["AccumulatedDeltaRangeMeters"].values
-            pr_rate_m_s = sat_df["PseudorangeRateMetersPerSecond"].values
-            carrier_frequency_hz = sat_df["CarrierFrequencyHz"].values[0]
+        i = 0
+        for epoch_id, epoch_df in df.groupby('epoch_id'):
+            # pr = (epoch_df['RawPseudorangeMeters'] - epoch_df['IonosphericDelayMeters'] - epoch_df['TroposphericDelayMeters'] - epoch_df['IsrbMeters'] + epoch_df['SvClockBiasMeters']).to_numpy()
+            # prr = (epoch_df['PseudorangeRateMetersPerSecond'] + epoch_df['SvClockDriftMetersPerSecond']).to_numpy()
+            pr = epoch_df['CorrectedPseudorange'].to_numpy()
+            prr = epoch_df['CorrectedPseudorangeRateMetersPerSecond'].to_numpy()
+            sat_pos = epoch_df[['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']].to_numpy()
+            sat_vel = epoch_df[['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']].to_numpy()
 
-            # timestamps in seconds
-            timestamps_s = timestamps_seconds(
-                time_nanos=time_nanos,
-                full_bias_nanos=full_bias_nanos,
-                time_offset_nanos=time_offset_nanos
-            )
+            # Wx = 1 / epoch_df['RawPseudorangeUncertaintyMeters'].to_numpy()
+            # Wv = 1 / epoch_df['PseudorangeRateUncertaintyMetersPerSecond'].to_numpy()
+            # Wx = np.diag(Wx)
+            # Wv = np.diag(Wv)
 
-            # signal strength (linear, proportional to energy)
-            cn0_linear = cn0_to_linear(cn0_db_hz)
+            curr_pos = gp.position(pr, prr, sat_pos, sat_vel, prev_estimate=curr_pos, Wx=None, Wv=None)
 
-            # phase from ADR
-            phase_adr_unwrapped, phase_adr_wrapped = reconstruct_phase_from_adr(
-                adr_m=adr_m,
-                carrier_frequency_hz=carrier_frequency_hz
-            )
+            print(f"Epoch ID: {epoch_id}")
+            estimated_positions[i, :] = ecef_to_lla(curr_pos["position"])
 
-            # phase from pseudorange rate
-            phase_rate_unwrapped, phase_rate_wrapped = reconstruct_phase_from_rate(
-                pr_rate_m_s=pr_rate_m_s,
-                timestamps_s=timestamps_s,
-                carrier_frequency_hz=carrier_frequency_hz
-            )
+            for _, row in epoch_df.iterrows():
+                key = str(row['Svid']) + "_" + str(row['ConstellationType'])
 
-            phase_adr_unwrapped_rate = differentiate(phase_adr_unwrapped, timestamps_s)
-            phase_rate_unwrapped_rate = differentiate(phase_rate_unwrapped, timestamps_s)
+                if key not in sat_trajectories:
+                    sat_trajectories[key] = []
 
-            # at this point you now have:
-            # timestamps_s              -> time axis
-            # cn0_linear                -> signal strength over time
-            # phase_adr_unwrapped_rate  -> rate of change of phase evolution from ADR
-            # phase_rate_unwrapped_rate -> rate of change of phase evolution from range rate
+                sv_ecef = np.array([
+                    row["SvPositionXEcefMeters"],
+                    row["SvPositionYEcefMeters"],
+                    row["SvPositionZEcefMeters"],
+                ])
 
-            print(f"  SVID {svid}: samples={len(sat_df)}")
+                sv_lat, sv_lon, sv_alt = ecef_to_lla(sv_ecef)
+                sat_trajectories[key].append((sv_lat, sv_lon))
+
+            i += 1
+
+        m = folium.Map(
+            location=[estimated_positions[0,0], estimated_positions[0,1]],
+            zoom_start=15,
+            tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+            attr="Google"
+        )
+
+        folium.PolyLine(
+            list(zip(estimated_positions[:,0], estimated_positions[:,1])),
+            color="blue",
+            weight=3,
+            opacity=0.8,
+            tooltip="Estimated"
+        ).add_to(m)
+
+        for sv_id, path in sat_trajectories.items():
+            if len(path) < 2:
+                continue
+
+            # satellite paths often span sky: plot lightly
+            folium.PolyLine(
+                path,
+                color="purple",
+                weight=1,
+                opacity=0.5,
+                tooltip=f"SV {sv_id}"
+            ).add_to(m)
+
+        for sv_id, path in sat_trajectories.items():
+            if len(path) < 2:
+                continue
+            folium.CircleMarker(location=path[0], radius=3, color="purple", fill=True).add_to(m)
+            folium.CircleMarker(location=path[-1], radius=3, color="black", fill=True).add_to(m)
+
+        m.save("test_map.html")
+
+        break  # Just do one file for testing

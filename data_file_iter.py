@@ -11,11 +11,12 @@ from typing import Optional, List
 
 class Data_file_iterator:
     def __init__(self, base_path: str, split: str='train', limit: int | None=None, 
-                 prefix: Optional[str]=None, seed: int = 42, preprocessed: bool = True):
+                 prefix: Optional[str]=None, phone: Optional[str]=None, seed: int = 42, preprocessed: bool = True):
         self.base_path = base_path
         self.split = split
         self.limit = limit
         self.prefix = prefix
+        self.phone = phone
         self.abs_counter = 0
         self.current_file = ""
 
@@ -27,6 +28,8 @@ class Data_file_iterator:
                 continue
             drive_path = os.path.join(split_path, drive_id)
             for phone_name in os.listdir(drive_path):
+                if self.phone and self.phone != phone_name:
+                    continue
                 if preprocessed:
                     file_path = os.path.join(drive_path, phone_name, "device_gnss_preprocessed.csv")
                 else:

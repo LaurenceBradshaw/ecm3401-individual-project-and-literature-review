@@ -32,6 +32,7 @@ def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
     net.load_state_dict(torch.load(state_dict))
     net.eval()
 
+# TODO: similar to train.py, create/use _compute_pos function to reduce code duplication
 def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name: str) -> None:
     N = df['epoch_id'].nunique()
     truth_positions = np.zeros((N, 3))

@@ -77,6 +77,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
 
         pr_weights, pr_error, prr_weights = net(*feats)
 
+        # TODO: do this before outputting from the network.
         Wx = torch.diag_embed(pr_weights.squeeze(1))
         pr_error = pr_error.T.squeeze(0)
         Wv = torch.diag_embed(prr_weights.squeeze(1))

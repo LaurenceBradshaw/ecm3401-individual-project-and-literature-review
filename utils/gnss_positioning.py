@@ -292,9 +292,6 @@ def position(
     prr : pseudorange rates, shape (n_sats,)
     sat_pos : satellite positions, shape (n_sats, 3)
     sat_vel : satellite velocities, shape (n_sats, 3)
-    pr_uc : pseudorange uncertainties, shape (n_sats,)
-    prr_uc : pseudorange rate uncertainties, shape (n_sats,)
-    cn0_dbhz : carrier-to-noise ratios in dB-Hz, shape (n_sats,)
     prev_estimate : dict with keys 'position', 'velocity', 'clock_bias', 'clock_drift'
     Wx : weight matrix for position, shape (n_sats, n_sats)
     Wv : weight matrix for velocity, shape (n_sats, n_sats)

@@ -267,7 +267,7 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023"
-    data_iter = Data_file_iterator(base_path, split='train', limit=10)
+    data_iter = Data_file_iterator(base_path, split='train', limit=10, prefix='2022-02-24-18-29-us-ca-lax-o')
 
     setup(Gnss_multi_epoch_net, "multi_epoch_network.pt", kf=False)
     for df, truth_df in data_iter:
