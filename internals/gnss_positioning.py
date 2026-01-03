@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import utils.coord_systems as coords
+import internals.coord_systems as coords
 
 # Constants
 EARTH_ROTATION_SPEED = 7.292115e-5  # rad/s

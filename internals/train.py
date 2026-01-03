@@ -4,76 +4,42 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-from utils.coord_systems import lla_to_ecef, ecef_to_lla, heading_speed_to_ecef
-from utils import gnss_positioning as gp
-from data_file_iter import Data_file_iterator
+from internals.coord_systems import lla_to_ecef, ecef_to_lla, heading_speed_to_ecef
+from internals import gnss_positioning as gp
+import internals.common as common
 
 PR_COL = 'CorrectedPseudorange'
 PRR_COL = 'CorrectedPseudorangeRateMetersPerSecond'
 SAT_POS_COLS = ['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']
 SAT_VEL_COLS = ['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']
 
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_device(device)
-
-def setup(data_iter: Data_file_iterator, network_cls: torch.nn.Module) -> None:
+def setup(base_path: str, network_cls: torch.nn.Module) -> None:
     global net, optimizer, features
     ###############
     features = network_cls.features
 
-    dataset_stats_file = f"{data_iter.base_path}/dataset_stats.csv"
+    dataset_stats_file = f"{os.path.dirname(base_path)}/dataset_stats.csv"
     stats_df = pd.read_csv(dataset_stats_file)
 
     mean = torch.tensor([stats_df.loc[stats_df['column_name'] == col, 'mean'].values[0] for col in features
-    ], dtype=torch.float32).to(device)
+    ], dtype=torch.float32).to(common.get_device())
     std = torch.tensor([stats_df.loc[stats_df['column_name'] == col, 'std_dev'].values[0] for col in features
-    ], dtype=torch.float32).to(device)
+    ], dtype=torch.float32).to(common.get_device())
 
-    net = network_cls(mean=mean, std=std, feat_dim=len(features)).to(device)
+    net = network_cls(mean=mean, std=std, feat_dim=len(features)).to(common.get_device())
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
-
-def _get_ground_truth(truth_df: pd.DataFrame, epoch_df: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
-    # Find closest ground truth row by time
-    gt_row = truth_df.iloc[(truth_df['UnixTimeMillis'] - epoch_df["utcTimeMillis"].mean()).abs().argsort()[:1]]
-    # Convert to ECEF
-    pos_truth = lla_to_ecef(
-        gt_row[['LatitudeDegrees','LongitudeDegrees','AltitudeMeters']].to_numpy().flatten()
-    )
-    # Convert velocity to ECEF
-    vel_truth = heading_speed_to_ecef(
-        gt_row['BearingDegrees'], gt_row['SpeedMps'],
-        gt_row['LatitudeDegrees'], gt_row['LongitudeDegrees']
-    )
-    # Convert to tensors
-    pos_truth = torch.tensor(pos_truth, dtype=torch.float32, device=device)
-    vel_truth = torch.tensor(vel_truth, dtype=torch.float32, device=device)
-    return pos_truth, vel_truth
-
-def _compute_pos(epoch_df: pd.DataFrame, pr_weights: torch.Tensor, pr_correction: torch.Tensor, prr_weights: torch.Tensor, curr_pos: dict) -> dict:
-    # Grab the required columns and convert to tensors
-    pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float32, device=device)
-    if pr_correction is not None:
-        pr = pr + pr_correction
-        
-    prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float32, device=device)
-    sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float32, device=device)
-    sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float32, device=device)
-    # Compute updated position estimate
-    curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
-    return curr_pos
 
 def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path: str) -> None:
     N = df['epoch_id'].nunique()
 
     # Initial position estimate using first epoch otherwise gradients are terrible initially
     # This doesn't need any weights, the initial position is just to get a reasonable starting point
-    curr_pos = _compute_pos(df[df['epoch_id'] == 0], pr_weights=None, pr_correction=None, prr_weights=None, curr_pos=None)
+    curr_pos = common.compute_pos(df[df['epoch_id'] == 0], pr_weights=None, pr_correction=None, prr_weights=None, curr_pos=None)
 
     optimizer.zero_grad()
     for epoch_id, epoch_df in df.groupby("epoch_id"):
-        pos_truth, vel_truth = _get_ground_truth(truth_df, epoch_df)
-        feats = get_feats(epoch_df, features, device)
+        pos_truth, vel_truth = common.get_ground_truth(truth_df, epoch_df)
+        feats = get_feats(epoch_df, features, common.get_device())
 
         pr_weights, pr_error, prr_weights = net(*feats)
 
@@ -83,12 +49,12 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         Wv = torch.diag_embed(prr_weights.squeeze(1))
 
         # Get the baseline weights to compare model against
-        Wx_baseline = torch.diag(torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float32))
-        Wv_baseline = torch.diag(torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float32))
+        Wx_baseline = torch.diag(torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float32, device='cpu'))
+        Wv_baseline = torch.diag(torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float32, device='cpu'))
 
         # Update position estimate with weighted least squares - both model and baseline
-        baseline_pos = _compute_pos(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=curr_pos)
-        curr_pos = _compute_pos(epoch_df, pr_weights=Wx, pr_correction=pr_error, prr_weights=Wv, curr_pos=curr_pos)
+        baseline_pos = common.compute_pos(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=curr_pos)
+        curr_pos = common.compute_pos(epoch_df, pr_weights=Wx, pr_correction=pr_error, prr_weights=Wv, curr_pos=curr_pos)
 
         # Compute losses
         pr_baseline_loss = torch.linalg.norm(baseline_pos['position'] - pos_truth)

@@ -1,13 +1,11 @@
 import pandas as pd
 import os
 import numpy as np
-from data_file_iter import Data_file_iterator
-from utils import gnss_positioning as gp
-from collections import defaultdict
-from scipy.optimize import curve_fit
-from utils.coord_systems import lla_to_ecef
 import math
-from epoch_manager import Epoch_manager
+from collections import defaultdict
+from internals.drive_data import Drive_iterator
+from internals.epoch_manager import Epoch_manager
+from internals import gnss_positioning as gp
 
 # This file is wildly inefficient since it loops through the data multiple times.
 # TODO: optimise later.
@@ -379,7 +377,7 @@ def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: d
     epoch_df.loc[epoch_df.index, 'doppler_residual'] = D_res
     
 
-def create_dataset_stats():
+def create_dataset_stats(base_path: str):
     stats = {}  # column -> {count, mean, M2}
     samples = defaultdict(list)
 
@@ -404,10 +402,15 @@ def create_dataset_stats():
             st['M2'] += delta * delta2
 
 
-    data_iter = Data_file_iterator(base_path, split='train')
+    # data_iter = Data_file_iterator(base_path, split='train')
+    
+    drive_iter = Drive_iterator(
+        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        preprocessed=True
+    )
 
-    for df, truth_df in data_iter:
-
+    for drive in drive_iter:
+        df, _ = drive.get_dataframes()
         # --- update stats ---
         for col in df.select_dtypes(include=['number']).columns:
             update_welford(col, df[col].to_numpy())
@@ -423,7 +426,7 @@ def create_dataset_stats():
                 cn0s = sat_df['Cn0DbHz'].to_numpy(dtype=float)
                 samples[constell].extend(zip(elevs, cn0s))
 
-        print(f"Processed file: {data_iter.get_current_file_path()}")
+        print(f"Processed file: {drive.get_directory_name()}")
 
     final_stats = []
 
@@ -447,12 +450,18 @@ def create_dataset_stats():
     print("Dataset statistics saved to dataset_stats.csv")
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2023/sdc2023"
-    output_file = f"{base_path}/dataset_stats.csv"
-    data_iter = Data_file_iterator(base_path, split='train', preprocessed=False)
+    base_path = "./smartphone-decimeter-2023/sdc2023/train"
+    output_file = f"{os.path.dirname(base_path)}/dataset_stats.csv"
+    # data_iter = Data_file_iterator(base_path, split='train', preprocessed=False)
+    
+    drive_iter = Drive_iterator(
+        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        preprocessed=True
+    )
 
-    for df, truth_df in data_iter:
-        print(f"Pre-processing file: {data_iter.get_current_file_path()}")
+    for drive in drive_iter:
+        print(f"Pre-processing file: {drive.get_directory_name()}")
+        df, truth_df = drive.get_dataframes()
         
         df["epoch_id"] = df.groupby('utcTimeMillis').ngroup()
         # Filter to L1 frequency band only. L5 is a pain
@@ -582,9 +591,9 @@ if __name__ == "__main__":
         #     poor_region[start:idx+1] = True
         
         # df.loc[df.index, 'poor_region'] = poor_region
-        df.to_csv(f"{data_iter.get_current_file_path().replace(".csv","")}_preprocessed.csv", index=False)
+        df.to_csv(f"{drive.get_directory_name()}/device_gnss_preprocessed.csv", index=False)
 
-    create_dataset_stats()
+    create_dataset_stats(base_path)
 
 
 

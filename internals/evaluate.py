@@ -1,22 +1,16 @@
 import pandas as pd
-import os
 import numpy as np
-from data_file_iter import Data_file_iterator
 import torch
-import torch.nn.functional as F
-from torch.nn.utils.rnn import pad_sequence
-from utils.coord_systems import lla_to_ecef, ecef_to_lla
-import utils.gnss_positioning as gp
 import folium
-from utils.gnss_positioning import Kalman_filter
+from internals.coord_systems import ecef_to_lla
+from internals.gnss_positioning import Kalman_filter
+import internals.gnss_positioning as gp
+import internals.common as common
 
 PR_COL = 'CorrectedPseudorange'
 PRR_COL = 'CorrectedPseudorangeRateMetersPerSecond'
 SAT_POS_COLS = ['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']
 SAT_VEL_COLS = ['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_device(device)
 
 def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
     global net, features, kf_enabled
@@ -25,8 +19,8 @@ def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
     features = network_cls.features
     
     # Dummy mean and std since we are loading a pretrained model
-    mean = torch.tensor([0 for _ in features], dtype=torch.float32).to(device)
-    std = torch.tensor([1 for _ in features], dtype=torch.float32).to(device)
+    mean = torch.tensor([0 for _ in features], dtype=torch.float32).to(common.get_device())
+    std = torch.tensor([1 for _ in features], dtype=torch.float32).to(common.get_device())
 
     net = network_cls(mean=mean,std=std,feat_dim=len(features))
     net.load_state_dict(torch.load(state_dict))
@@ -61,12 +55,11 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
         feats = epoch_df[features].to_numpy(dtype=np.float32)
         gt_row = truth_df.iloc[(truth_df['UnixTimeMillis'] - epoch_df["utcTimeMillis"].mean()).abs().argsort()[:1]]
         pos_truth = gt_row[['LatitudeDegrees', 'LongitudeDegrees', 'AltitudeMeters']].to_numpy().flatten()
-        feats = torch.tensor(feats, dtype=torch.float32, device=device)
-        pos_truth = torch.tensor(pos_truth, dtype=torch.float32, device=device)
+        feats = torch.tensor(feats, dtype=torch.float32, device=common.get_device())
+        pos_truth = torch.tensor(pos_truth, dtype=torch.float32, device=common.get_device())
         truth_positions[i, :] = pos_truth
 
-        feats = get_feats(epoch_df, features, device)
-
+        feats = get_feats(epoch_df, features, common.get_device())
         with torch.no_grad():
             pr_weights, pr_error, prr_weights = net(*feats)
 
@@ -75,14 +68,14 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
 
         prr_weights = torch.diag_embed(prr_weights.squeeze(1))
 
-        pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float32)
-        prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float32)
-        sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float32)
-        sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float32)
+        pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float32, device='cpu')
+        prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float32, device='cpu')
+        sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float32, device='cpu')
+        sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float32, device='cpu')
 
-        pr_weights_baseline = torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float32)
+        pr_weights_baseline = torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float32, device='cpu')
         pr_weights_baseline = torch.diag(pr_weights_baseline)
-        prr_weights_baseline = torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float32)
+        prr_weights_baseline = torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float32, device='cpu')
         prr_weights_baseline = torch.diag(prr_weights_baseline)
         baseline_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights_baseline, Wv=prr_weights_baseline, prev_estimate=curr_pos)
 

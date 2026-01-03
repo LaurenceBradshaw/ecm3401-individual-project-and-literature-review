@@ -352,6 +352,11 @@ class Gnss_single_epoch_net(nn.Module):
 
         # return pr_weights, pr_errors, prr_weights, prr_errors
         # return pr_weights, prr_weights
+        
+        # pr_weights = torch.diag_embed(pr_weights.squeeze(1))
+        # pr_errors = pr_errors.T.squeeze(0)
+        # prr_weights = torch.diag_embed(prr_weights.squeeze(1))
+
         return pr_weights, pr_errors, prr_weights
     
 class Gnss_multi_epoch_net(Gnss_single_epoch_net):
