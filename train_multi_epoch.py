@@ -5,6 +5,7 @@ import torch
 from internals.epoch_manager import Epoch_manager
 from internals.train import setup, run
 from internals.drive_data import Drive_iterator
+from internals.common import compute_residual_matrix
 from model import Gnss_multi_epoch_net
 
 epoch_manager = None
@@ -47,20 +48,22 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
 
     lengths_tensor = torch.tensor(lengths, dtype=torch.long, device=device)
 
-    return sats_tensor, lengths_tensor
+    res_matrix = compute_residual_matrix(epoch_df)
+
+    return sats_tensor, lengths_tensor, res_matrix
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023/train"
     drive_iter = Drive_iterator(
         # TODO: hand select these
         drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
-        preprocessed=True
     )
 
     setup(base_path, Gnss_multi_epoch_net)
 
-    for drive in drive_iter:
-        print(f"Processing file: {drive.get_directory_name()}")
+    n_drives = drive_iter.nitems()
+    for i, drive in enumerate(drive_iter):
+        print(f"[{i+1}/{n_drives}] Processing file: {drive.get_directory_name()}")
         df, truth_df = drive.get_dataframes()
         epoch_manager = Epoch_manager()
         run(df, truth_df, get_feats, save_path="multi_epoch_network.pt")

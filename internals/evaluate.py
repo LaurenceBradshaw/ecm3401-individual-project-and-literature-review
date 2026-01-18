@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import torch
 import folium
-from internals.coord_systems import ecef_to_lla
+from internals.coord_systems import ecef_to_lla, lla_to_ecef
 from internals.gnss_positioning import Kalman_filter
 import internals.gnss_positioning as gp
 import internals.common as common
@@ -29,9 +29,15 @@ def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
 # TODO: similar to train.py, create/use _compute_pos function to reduce code duplication
 def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name: str) -> None:
     N = df['epoch_id'].nunique()
-    truth_positions = np.zeros((N, 3))
-    estimated_positions = np.zeros((N, 3))
-    estimated_positions_baseline = np.zeros((N, 3))
+    truth_positions_lla = np.zeros((N, 3))
+    truth_positions_ecef = np.zeros((N, 3))
+    truth_speed = np.zeros((N,))
+    estimated_positions_lla = np.zeros((N, 3))
+    estimated_positions_ecef = np.zeros((N, 3))
+    estimated_speed = np.zeros((N,))
+    estimated_positions_baseline_lla = np.zeros((N, 3))
+    estimated_positions_baseline_ecef = np.zeros((N, 3))
+    estimated_speed_baseline = np.zeros((N,))
     sat_trajectories = {}
 
     curr_pos = None
@@ -57,7 +63,9 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
         pos_truth = gt_row[['LatitudeDegrees', 'LongitudeDegrees', 'AltitudeMeters']].to_numpy().flatten()
         feats = torch.tensor(feats, dtype=torch.float32, device=common.get_device())
         pos_truth = torch.tensor(pos_truth, dtype=torch.float32, device=common.get_device())
-        truth_positions[i, :] = pos_truth
+        truth_positions_lla[i, :] = pos_truth
+        truth_positions_ecef[i, :] = lla_to_ecef(pos_truth.cpu().numpy())
+        truth_speed[i] = gt_row['SpeedMps'].to_numpy()
 
         feats = get_feats(epoch_df, features, common.get_device())
         with torch.no_grad():
@@ -99,8 +107,12 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
 
         est_lla = ecef_to_lla(curr_pos["position"].cpu().numpy())
         est_lla_baseline = ecef_to_lla(baseline_pos["position"].cpu().numpy())
-        estimated_positions[i, :] = est_lla
-        estimated_positions_baseline[i, :] = est_lla_baseline
+        estimated_positions_lla[i, :] = est_lla
+        estimated_positions_ecef[i, :] = curr_pos["position"].cpu().numpy()
+        estimated_speed[i] = np.linalg.norm(curr_pos["velocity"].cpu().numpy())
+        estimated_positions_baseline_lla[i, :] = est_lla_baseline
+        estimated_positions_baseline_ecef[i, :] = baseline_pos["position"].cpu().numpy()
+        estimated_speed_baseline[i] = np.linalg.norm(baseline_pos["velocity"].cpu().numpy())
 
         for _, row in epoch_df.iterrows():
             key = row['sat_identifier']
@@ -118,9 +130,26 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
             sat_trajectories[key].append((sv_lat, sv_lon))
 
         i += 1
+
+    # RMSE between estimated_positions and truth_positions as well as between estimated_positions_baseline and truth_positions
+    # positions are in ecef
+    diffs = estimated_positions_ecef - truth_positions_ecef
+    diffs_baseline = estimated_positions_baseline_ecef - truth_positions_ecef
+    rmse = np.sqrt(np.mean(np.sum(diffs**2, axis=1)))
+    rmse_baseline = np.sqrt(np.mean(np.sum(diffs_baseline**2, axis=1)))
+    print(f"RMSE pos (model): {rmse:.2f} m")
+    print(f"RMSE pos (baseline): {rmse_baseline:.2f} m")
+
+    # Same for speed
+    speed_diffs = estimated_speed - truth_speed
+    speed_diffs_baseline = estimated_speed_baseline - truth_speed
+    rmse_speed = np.sqrt(np.mean(speed_diffs**2))
+    rmse_speed_baseline = np.sqrt(np.mean(speed_diffs_baseline**2))
+    print(f"RMSE speed (model): {rmse_speed:.2f} m/s")
+    print(f"RMSE speed (baseline): {rmse_speed_baseline:.2f} m/s")
     
     m = folium.Map(
-        location=[truth_positions[0,0], truth_positions[0,1]],
+        location=[truth_positions_lla[0,0], truth_positions_lla[0,1]],
         zoom_start=15,
         tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
         attr="Google"
@@ -128,7 +157,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
 
     # Truth trajectory
     folium.PolyLine(
-        list(zip(truth_positions[:,0], truth_positions[:,1])),
+        list(zip(truth_positions_lla[:,0], truth_positions_lla[:,1])),
         color="red",
         weight=3,
         opacity=0.8,
@@ -137,7 +166,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
 
     # Estimated trajectory
     folium.PolyLine(
-        list(zip(estimated_positions[:,0], estimated_positions[:,1])),
+        list(zip(estimated_positions_lla[:,0], estimated_positions_lla[:,1])),
         color="blue",
         weight=3,
         opacity=0.8,
@@ -146,7 +175,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
 
     # Estimated trajectory unweighted
     folium.PolyLine(
-        list(zip(estimated_positions_baseline[:,0], estimated_positions_baseline[:,1])),
+        list(zip(estimated_positions_baseline_lla[:,0], estimated_positions_baseline_lla[:,1])),
         color="green",
         weight=3,
         opacity=0.8,

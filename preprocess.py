@@ -406,7 +406,6 @@ def create_dataset_stats(base_path: str):
     
     drive_iter = Drive_iterator(
         drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
-        preprocessed=True
     )
 
     for drive in drive_iter:
@@ -456,11 +455,15 @@ if __name__ == "__main__":
     
     drive_iter = Drive_iterator(
         drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
-        preprocessed=True
+        preprocessed=False
     )
 
+    n_drives = drive_iter.nitems()
+    drive_i = 0
+    # TODO: parallelise this processing (will have to log to separate file or something)
     for drive in drive_iter:
-        print(f"Pre-processing file: {drive.get_directory_name()}")
+        print(f"[{drive_i+1}/{n_drives}] Pre-processing file: {drive.get_directory_name()}")
+        drive_i += 1
         df, truth_df = drive.get_dataframes()
         
         df["epoch_id"] = df.groupby('utcTimeMillis').ngroup()
@@ -482,6 +485,7 @@ if __name__ == "__main__":
         ])
 
         if df.empty: # No valid data after filtering
+            print(f"No valid data after filtering, skipping drive: {drive.get_directory_name()}")
             continue
 
         # Apply corrections to pseudorange and pseudorange rate
@@ -517,7 +521,38 @@ if __name__ == "__main__":
         # Should be done with removing rows now
         df = df.groupby('epoch_id').filter(lambda x: len(x) >= 5)
         if df.empty:
+            print(f"No valid data after filtering, skipping drive: {drive.get_directory_name()}")
             continue
+
+        # Check to see if any duplicate satellites in the same epoch and try to resolve them
+        duplicate_epochs = df.duplicated(subset=['epoch_id', 'ConstellationType', 'Svid', 'SignalType'], keep=False)
+        if duplicate_epochs.any():
+            print(f"Found duplicate satellite entries in the same epoch. Attempting to resolve...")
+        duplicate_rows = df[duplicate_epochs]
+        for epoch_id, dup_epoch_df in duplicate_rows.groupby('epoch_id'):
+            for (constellation, svid, signal_type), group in dup_epoch_df.groupby(['ConstellationType', 'Svid', 'SignalType']):
+                if len(group) <= 1:
+                    assert False, "Should only be processing duplicates here."
+                times = group['utcTimeMillis'].to_numpy()
+                time_diffs = np.diff(np.sort(times))
+                if np.all(time_diffs == 0):
+                    # All timestamps are the same, drop one of the duplicates
+                    df.drop(group.index[1:], inplace=True)
+                else:
+                    # Push duplicates to next epoch if possible
+                    # Not possible if next epoch already has that satellite
+                    next_epoch_id = epoch_id + 1
+                    next_epoch_df = df[df['epoch_id'] == next_epoch_id]
+                    if not ((next_epoch_df['ConstellationType'] == constellation) & (next_epoch_df['Svid'] == svid) & (next_epoch_df['SignalType'] == signal_type)).any():
+                        # Push to next epoch
+                        df.loc[group.index, 'epoch_id'] = next_epoch_id
+                    else:
+                        # Drop duplicates
+                        df.drop(group.index[1:], inplace=True)
+                        
+        # Assert no more duplicates
+        duplicate_epochs = df.duplicated(subset=['epoch_id', 'ConstellationType', 'Svid', 'SignalType'], keep=False)
+        assert not duplicate_epochs.any(), "Duplicate satellite entries still exist after resolution."
         
         # df['residual_matrix'] = None
         # df['residual_matrix'] = df['residual_matrix'].astype(object)
@@ -559,11 +594,11 @@ if __name__ == "__main__":
             # prr_weights_baseline = np.maximum(prr_weights_baseline, 0.05)
             # df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
 
-            # For each satellite, exclude it and compute position with remaining satellites
+            # # For each satellite, exclude it and compute position with remaining satellites
             # for idx, sat_row in epoch_df.iterrows():
-            #     excluded_sat = (sat_row['ConstellationType'], sat_row['Svid'])
+            #     excluded_sat = (sat_row['ConstellationType'], sat_row['Svid'], sat_row['SignalType']) # include signal type since it is possible to get both L1 and L5 for same satellite
             #     included_sats = epoch_df[
-            #         ~((epoch_df['ConstellationType'] == excluded_sat[0]) & (epoch_df['Svid'] == excluded_sat[1]))
+            #         ~((epoch_df['ConstellationType'] == excluded_sat[0]) & (epoch_df['Svid'] == excluded_sat[1]) & (epoch_df['SignalType'] == excluded_sat[2]))
             #     ]
             #     assert included_sats.shape[0] == epoch_df.shape[0] - 1, f"Only one satellite should be excluded, but got {included_sats.shape[0]} included vs {epoch_df.shape[0]} total."
 
@@ -591,7 +626,7 @@ if __name__ == "__main__":
         #     poor_region[start:idx+1] = True
         
         # df.loc[df.index, 'poor_region'] = poor_region
-        df.to_csv(f"{drive.get_directory_name()}/device_gnss_preprocessed.csv", index=False)
+        df.to_csv(os.path.join(f"{drive.get_directory_name()}", "device_gnss_preprocessed.csv"), index=False)
 
     create_dataset_stats(base_path)
 

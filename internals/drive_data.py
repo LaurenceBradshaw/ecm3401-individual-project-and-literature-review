@@ -51,7 +51,7 @@ class Drive:
 
 
 class Drive_iterator:
-    def __init__(self, drive_paths: List[str], preprocessed: bool) -> None:
+    def __init__(self, drive_paths: List[str], preprocessed: bool = True) -> None:
         self.drive_paths_ = drive_paths
         self.preprocessed_ = preprocessed
         self.index_ = 0
@@ -74,3 +74,7 @@ class Drive_iterator:
             return self.__next__()
 
         return drive
+    
+    def nitems(self) -> int:
+        return len(self.drive_paths_)
+    

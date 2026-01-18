@@ -5,6 +5,7 @@ import torch
 from internals.drive_data import Drive
 from internals.epoch_manager import Epoch_manager
 from internals.evaluate import setup, run
+from internals.common import compute_residual_matrix
 from model import Gnss_multi_epoch_net
 
 epoch_manager = None
@@ -47,7 +48,9 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
 
     lengths_tensor = torch.tensor(lengths, dtype=torch.long, device=device)
 
-    return sats_tensor, lengths_tensor
+    res_matrix = compute_residual_matrix(epoch_df)
+
+    return sats_tensor, lengths_tensor, res_matrix
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023/train"
@@ -67,3 +70,5 @@ if __name__ == "__main__":
 #     # data_iter = Data_file_iterator(base_path, split='train', prefix='2023-09-06-00-01-us-ca-routen')
 #     # data_iter = Data_file_iterator(base_path, split='train', prefix='2023-03-08-21-34-us-ca-mtv-u')
 #     # data_iter = Data_file_iterator(base_path, split='train', prefix='2023-05-09-21-32-us-ca-mtv-pe1')
+
+# 2020-06-25-00-34-us-ca-mtv-sb-101\pixel4xl

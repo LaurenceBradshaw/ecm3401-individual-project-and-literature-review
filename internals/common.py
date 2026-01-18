@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import torch
 from internals.coord_systems import lla_to_ecef, heading_speed_to_ecef
 import internals.gnss_positioning as gp
@@ -41,3 +42,54 @@ def compute_pos(epoch_df: pd.DataFrame, pr_weights: torch.Tensor, pr_correction:
     # Compute updated position estimate
     curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
     return curr_pos
+
+def compute_residual_matrix(epoch_df: pd.DataFrame) -> torch.Tensor:
+    n_sats = len(epoch_df)
+    device = get_device()
+
+    residual_matrix = torch.zeros(
+        (n_sats, n_sats),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # Ensure unique satellite + signal identity
+    if epoch_df.duplicated(subset=["ConstellationType", "Svid", "SignalType"]).any():
+        raise ValueError("Duplicate satellite entries with the same signal type found in epoch_df.")
+
+    # Pre-extract identity for stable indexing
+    sat_keys = list(
+        zip(epoch_df["ConstellationType"], epoch_df["Svid"], epoch_df["SignalType"])
+    )
+
+    sat_num = 0
+    for row_idx, sat_row in epoch_df.iterrows():
+        excluded_key = (sat_row["ConstellationType"], sat_row["Svid"], sat_row["SignalType"])
+
+        included_mask = [key != excluded_key for key in sat_keys]
+
+        included_sats = epoch_df[included_mask]
+
+        curr_pos = compute_pos(included_sats, None, None, None, curr_pos=None)
+
+        pr = included_sats[PR_COL].to_numpy()
+        sat_pos = included_sats[SAT_POS_COLS].to_numpy()
+
+        x = np.zeros(4)
+        x[:3] = curr_pos["position"]
+        x[3] = curr_pos["clock_bias"]
+
+        # Residuals for included satellites only (length N-1)
+        res = gp.pr_residuals(x, sat_pos, pr)
+
+        # Insert into full row
+        col_indices = [
+            i for i, key in enumerate(sat_keys) if key != excluded_key
+        ]
+        residual_matrix[sat_num, col_indices] = torch.from_numpy(res.astype(np.float32)).to(device)
+
+        # Diagonal explicitly set (sentinel)
+        residual_matrix[sat_num, sat_num] = 0.0
+        sat_num += 1
+
+    return residual_matrix

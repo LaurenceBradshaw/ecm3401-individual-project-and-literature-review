@@ -4,13 +4,15 @@ import numpy as np
 import torch
 from internals.drive_data import Drive
 from internals.evaluate import setup, run
+from internals.common import compute_residual_matrix
 from model import Gnss_single_epoch_net
 
 
 def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple[torch.Tensor]:
     feats = epoch_df[features].to_numpy(dtype=np.float32)
     feats = torch.tensor(feats, dtype=torch.float32, device=device)
-    return (feats,)
+    res_matrix = compute_residual_matrix(epoch_df)
+    return feats, res_matrix
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023/train"

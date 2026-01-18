@@ -36,14 +36,6 @@ class Single_sat_encoder(nn.Module):
             nn.Linear(hidden_dim, emb_dim),
             nn.ReLU(inplace=True),
         )
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (num_sats, feat_dim)
@@ -63,16 +55,6 @@ class Multi_sat_encoder(nn.Module):
             batch_first=False,
             bidirectional=False,
         )
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for name, param in self.lstm_.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(param.data)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(param.data)
-            elif "bias" in name:
-                nn.init.zeros_(param.data)
 
     def forward(self, sats: torch.Tensor) -> torch.Tensor:
         # sats: (num_sats, feat_dim)
@@ -104,23 +86,6 @@ class Temporal_sat_encoder(nn.Module):
             nn.Dropout(p=dropout),
         )
 
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for name, param in self.lstm_.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(param.data)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(param.data)
-            elif "bias" in name:
-                nn.init.zeros_(param.data)
-
-        for module in self.proj_.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
     def forward(self, seq: torch.Tensor, lengths: torch.Tensor):
         # seq:     (num_sats, time_steps, feat_dim)
         # lengths: (num_sats,) valid sequence lengths
@@ -138,6 +103,39 @@ class Temporal_sat_encoder(nn.Module):
         last_hidden = h_n[-1]  # (num_sats, lstm_hidden)
 
         return self.proj_(last_hidden)  # (num_sats, emb_dim)
+    
+
+class Pairwise_attention_encoder(nn.Module):
+    def __init__(self, hidden_dim, output_dim):
+        super().__init__()
+        self.embed = nn.Linear(1, hidden_dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=4,
+            batch_first=True,
+            dropout=0.1,
+        )
+        self.out = nn.Linear(hidden_dim, output_dim)
+
+    def _create_diag_mask(self, size: int) -> torch.Tensor:
+        mask = torch.zeros((size, size), dtype=torch.bool)
+        mask.fill_diagonal_(True)
+        return mask
+
+    def forward(self, residuals: torch.Tensor) -> torch.Tensor:
+        n_sats = residuals.size(0)
+        mask = self._create_diag_mask(n_sats).to(residuals.device)
+
+        x = self.embed(residuals.unsqueeze(-1))  # (N, N, D)
+
+        attn_mask = mask                         # True = ignore
+        x, _ = self.attn(x, x, x, attn_mask=attn_mask)
+
+        # Aggregate per satellite (rows)
+        satellite_features = x.mean(dim=1)       # (N, D)
+
+        # One output per satellite
+        return self.out(satellite_features)      # (N, output_dim)
 
 
 class Gnss_single_epoch_net(nn.Module):
@@ -239,6 +237,8 @@ class Gnss_single_epoch_net(nn.Module):
         per_sat_emb_dim: int = 256,
         lstm_hidden: int = 256,
         lstm_layers: int = 1,
+        pairwise_attn_hidden: int = 128,
+        pairwise_attn_output: int = 128,
         joint_hidden: int = 512,
         dropout: float = 0.1,
         need_standardising: torch.Tensor = None,
@@ -265,7 +265,12 @@ class Gnss_single_epoch_net(nn.Module):
             lstm_layers=lstm_layers,
         )
 
-        joint_input_dim = per_sat_emb_dim + lstm_hidden
+        self.pairwise_attn_encoder = Pairwise_attention_encoder(
+            hidden_dim=pairwise_attn_hidden,
+            output_dim=pairwise_attn_output,
+        )
+
+        joint_input_dim = per_sat_emb_dim + lstm_hidden + pairwise_attn_output
 
         self.joint_mlp_ = nn.Sequential(
             nn.Linear(joint_input_dim, joint_hidden),
@@ -314,26 +319,22 @@ class Gnss_single_epoch_net(nn.Module):
             nn.Linear(joint_hidden // 2, 1)  # raw prediction, no activation
         )
 
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(self, sats: torch.Tensor):
+    def forward(self, sats: torch.Tensor, residual_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if sats.dim() != 2:
             raise ValueError("sats must be (num_sats, feat_dim)")
 
         if self.require_standardisation:
             sats = self.standardiser_(sats)
+        i = Gnss_multi_epoch_net.features.index("residual")
+        residual_matrix = residual_matrix - self.standardiser_.mean[i]
+        residual_matrix = residual_matrix / self.standardiser_.std[i]
 
         per_sat_emb = self.single_sat_encoder(sats)
         lstm_emb = self.multi_sat_encoder(sats)
 
-        joint = torch.cat([per_sat_emb, lstm_emb], dim=1)
+        pairwise_emb = self.pairwise_attn_encoder(residual_matrix)
+
+        joint = torch.cat([per_sat_emb, lstm_emb, pairwise_emb], dim=1)
         joint_feat = self.joint_mlp_(joint)
 
         pr_weight_logits = self.pr_weight_head_(joint_feat)
@@ -359,7 +360,7 @@ class Gnss_single_epoch_net(nn.Module):
 
         return pr_weights, pr_errors, prr_weights
     
-class Gnss_multi_epoch_net(Gnss_single_epoch_net):
+class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but can reuse code
 
     features = [
         'Cn0DbHz_linear',          # signal strength
@@ -455,7 +456,7 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net):
             dropout=dropout,
         )
 
-    def forward(self, sats: torch.Tensor, lengths: torch.Tensor):
+    def forward(self, sats: torch.Tensor, lengths: torch.Tensor, residual_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if sats.dim() != 3:
             raise ValueError("sats must be (num_sats, time_steps, feat_dim)")
 
@@ -467,4 +468,4 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net):
         sats = sats_flat.view(num_sats, -1, sats.size(-1))
 
         per_sat_emb = self.temporal_sat_encoder(sats, lengths)
-        return super().forward(sats=per_sat_emb)
+        return super().forward(sats=per_sat_emb, residual_matrix=residual_matrix) # should matrix also be temporal?

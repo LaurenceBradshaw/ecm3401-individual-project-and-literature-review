@@ -43,6 +43,9 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
 
         pr_weights, pr_error, prr_weights = net(*feats)
 
+        # assert all weights are not 1
+        assert not torch.all(pr_weights == 1.0), "All predicted pseudorange weights are 1.0"
+
         # TODO: do this before outputting from the network.
         Wx = torch.diag_embed(pr_weights.squeeze(1))
         pr_error = pr_error.T.squeeze(0)
@@ -72,9 +75,9 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         combined_loss = (
             pr_loss
             + 2.5 * prr_loss
-            + 1 * torch.relu(pr_loss - pr_baseline_loss)
-            + 2.5 * torch.relu(prr_loss - prr_baseline_loss)
-            + 50 * pr_weight_reg**2 + 100 * prr_weight_reg**2
+            # + 1 * torch.relu(pr_loss - pr_baseline_loss)
+            # + 2.5 * torch.relu(prr_loss - prr_baseline_loss)
+            # + 50 * pr_weight_reg**2 + 100 * prr_weight_reg**2
         )
 
         pos_gain = pr_baseline_loss.detach().item() - pr_loss.detach().item()
