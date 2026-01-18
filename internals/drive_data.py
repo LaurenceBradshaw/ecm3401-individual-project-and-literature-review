@@ -1,10 +1,10 @@
 import os
-from typing import Iterator, List, Tuple
+from typing import Iterator
 import pandas as pd
 
 
 class Drive:
-    def __init__(self, drive_path: str, preprocessed: bool) -> None:
+    def __init__(self, drive_path: str, preprocessed: bool = True) -> None:
         self.drive_path_ = drive_path
         self.preprocessed_ = preprocessed
 
@@ -46,12 +46,12 @@ class Drive:
     def get_directory_name(self) -> str:
         return os.path.normpath(self.drive_path_)
 
-    def get_dataframes(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def get_dataframes(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         return self.device_gnss_df_, self.ground_truth_df_
 
 
 class Drive_iterator:
-    def __init__(self, drive_paths: List[str], preprocessed: bool = True) -> None:
+    def __init__(self, drive_paths: list[str], preprocessed: bool = True) -> None:
         self.drive_paths_ = drive_paths
         self.preprocessed_ = preprocessed
         self.index_ = 0

@@ -48,15 +48,22 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
 
     lengths_tensor = torch.tensor(lengths, dtype=torch.long, device=device)
 
-    res_matrix = compute_residual_matrix(epoch_df)
+    pr_res_matrix, prr_res_matrix = compute_residual_matrix(epoch_df)
+    pr_res_matrix = torch.tensor(pr_res_matrix, dtype=torch.float32, device=device)
+    prr_res_matrix = torch.tensor(prr_res_matrix, dtype=torch.float32, device=device)
 
-    return sats_tensor, lengths_tensor, res_matrix
+    return sats_tensor, lengths_tensor, pr_res_matrix, prr_res_matrix
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023/train"
     drive_iter = Drive_iterator(
         # TODO: hand select these
-        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        # drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        drive_paths=[os.path.join(base_path, "2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"), 
+                     os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8"),
+                     os.path.join(base_path, "2023-09-06-00-01-us-ca-routen", "pixel4xl"),
+                     os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro")
+                     ]
     )
 
     setup(base_path, Gnss_multi_epoch_net)

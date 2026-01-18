@@ -34,7 +34,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
 
     # Initial position estimate using first epoch otherwise gradients are terrible initially
     # This doesn't need any weights, the initial position is just to get a reasonable starting point
-    curr_pos = common.compute_pos(df[df['epoch_id'] == 0], pr_weights=None, pr_correction=None, prr_weights=None, curr_pos=None)
+    curr_pos = common.compute_pos_torch(df[df['epoch_id'] == 0], pr_weights=None, pr_correction=None, prr_weights=None, curr_pos=None)
 
     optimizer.zero_grad()
     for epoch_id, epoch_df in df.groupby("epoch_id"):
@@ -56,8 +56,8 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         Wv_baseline = torch.diag(torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float32, device='cpu'))
 
         # Update position estimate with weighted least squares - both model and baseline
-        baseline_pos = common.compute_pos(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=curr_pos)
-        curr_pos = common.compute_pos(epoch_df, pr_weights=Wx, pr_correction=pr_error, prr_weights=Wv, curr_pos=curr_pos)
+        baseline_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=curr_pos)
+        curr_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx, pr_correction=pr_error, prr_weights=Wv, curr_pos=curr_pos)
 
         # Compute losses
         pr_baseline_loss = torch.linalg.norm(baseline_pos['position'] - pos_truth)

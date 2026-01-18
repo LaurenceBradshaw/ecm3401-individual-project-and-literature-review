@@ -137,8 +137,25 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
     diffs_baseline = estimated_positions_baseline_ecef - truth_positions_ecef
     rmse = np.sqrt(np.mean(np.sum(diffs**2, axis=1)))
     rmse_baseline = np.sqrt(np.mean(np.sum(diffs_baseline**2, axis=1)))
-    print(f"RMSE pos (model): {rmse:.2f} m")
-    print(f"RMSE pos (baseline): {rmse_baseline:.2f} m")
+    print(f"RMSE pos 3D (model): {rmse:.2f} m")
+    print(f"RMSE pos 3D (baseline): {rmse_baseline:.2f} m")
+    print(f"Improvement: {rmse_baseline - rmse:.2f} m, {(rmse_baseline - rmse)/rmse_baseline*100:.2f} %")
+    # Horizontal RMSE
+    horiz_diffs = diffs[:, :2]
+    horiz_diffs_baseline = diffs_baseline[:, :2]
+    rmse_horiz = np.sqrt(np.mean(np.sum(horiz_diffs**2, axis=1)))
+    rmse_horiz_baseline = np.sqrt(np.mean(np.sum(horiz_diffs_baseline**2, axis=1)))
+    print(f"RMSE pos horiz (model): {rmse_horiz:.2f} m")
+    print(f"RMSE pos horiz (baseline): {rmse_horiz_baseline:.2f} m")
+    print(f"Improvement: {rmse_horiz_baseline - rmse_horiz:.2f} m, {(rmse_horiz_baseline - rmse_horiz)/rmse_horiz_baseline*100:.2f} %")
+    # Vertical RMSE
+    vert_diffs = diffs[:, 2]
+    vert_diffs_baseline = diffs_baseline[:, 2]
+    rmse_vert = np.sqrt(np.mean(vert_diffs**2))
+    rmse_vert_baseline = np.sqrt(np.mean(vert_diffs_baseline**2))
+    print(f"RMSE pos vert (model): {rmse_vert:.2f} m")
+    print(f"RMSE pos vert (baseline): {rmse_vert_baseline:.2f} m")
+    print(f"Improvement: {rmse_vert_baseline - rmse_vert:.2f} m, {(rmse_vert_baseline - rmse_vert)/rmse_vert_baseline*100:.2f} %")
 
     # Same for speed
     speed_diffs = estimated_speed - truth_speed
@@ -147,6 +164,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
     rmse_speed_baseline = np.sqrt(np.mean(speed_diffs_baseline**2))
     print(f"RMSE speed (model): {rmse_speed:.2f} m/s")
     print(f"RMSE speed (baseline): {rmse_speed_baseline:.2f} m/s")
+    print(f"Improvement: {rmse_speed_baseline - rmse_speed:.2f} m/s, {(rmse_speed_baseline - rmse_speed)/rmse_speed_baseline*100:.2f} %")
     
     m = folium.Map(
         location=[truth_positions_lla[0,0], truth_positions_lla[0,1]],

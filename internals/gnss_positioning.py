@@ -1,11 +1,13 @@
 import torch
 import numpy as np
 import internals.coord_systems as coords
+from numba import njit
 
 # Constants
 EARTH_ROTATION_SPEED = 7.292115e-5  # rad/s
 SPEED_OF_LIGHT = 299792458.0        # m/s
 
+@njit(fastmath=True)
 def los_vector(xusr: np.ndarray, xsat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute line-of-sight unit vectors and ranges.
@@ -24,12 +26,27 @@ def los_vector(xusr: np.ndarray, xsat: np.ndarray) -> tuple[np.ndarray, np.ndarr
     rng : ndarray, shape (n_sat,)
         Ranges
     """
-    u = xsat - xusr.reshape(1, 3)
-    rng = np.linalg.norm(u, axis=1)
-    u /= rng[:, np.newaxis]  # row-wise normalization
+    n = xsat.shape[0]
+    u = np.empty((n, 3), dtype=np.float64)
+    rng = np.empty(n, dtype=np.float64)
+
+    for i in range(n):
+        dx = xsat[i, 0] - xusr[0]
+        dy = xsat[i, 1] - xusr[1]
+        dz = xsat[i, 2] - xusr[2]
+
+        r = (dx * dx + dy * dy + dz * dz) ** 0.5
+        rng[i] = r
+
+        inv_r = 1.0 / r
+        u[i, 0] = dx * inv_r
+        u[i, 1] = dy * inv_r
+        u[i, 2] = dz * inv_r
+
     return u, rng
 
 
+@njit(fastmath=True)
 def jacobian_residuals(x: np.ndarray, xsat: np.ndarray) -> np.ndarray:
     """
     Compute Jacobian of pseudorange residuals.
@@ -47,12 +64,19 @@ def jacobian_residuals(x: np.ndarray, xsat: np.ndarray) -> np.ndarray:
         Jacobian matrix
     """
     u, _ = los_vector(x[:3], xsat)
-    J = np.zeros((xsat.shape[0], 4))
-    J[:, :3] = -u
-    J[:, 3] = 1.0
+    n = xsat.shape[0]
+
+    J = np.empty((n, 4), dtype=np.float64)
+    for i in range(n):
+        J[i, 0] = -u[i, 0]
+        J[i, 1] = -u[i, 1]
+        J[i, 2] = -u[i, 2]
+        J[i, 3] = 1.0
+
     return J
 
 
+@njit(fastmath=True)
 def pr_residuals(x: np.ndarray, xsat: np.ndarray, pr: np.ndarray) -> np.ndarray:
     """
     Compute pseudorange residuals.
@@ -70,15 +94,22 @@ def pr_residuals(x: np.ndarray, xsat: np.ndarray, pr: np.ndarray) -> np.ndarray:
     -------
     residuals : ndarray, shape (n_sat,)
     """
-    u, rng = los_vector(x[:3], xsat)
+    _, rng = los_vector(x[:3], xsat)
+    n = xsat.shape[0]
 
-    # Sagnac effect
-    rng += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (xsat[:, 0] * x[1] - xsat[:, 1] * x[0])
+    sagnac = EARTH_ROTATION_SPEED / SPEED_OF_LIGHT
+    residuals = np.empty(n, dtype=np.float64)
 
-    residuals = rng - (pr - x[3])
+    for i in range(n):
+        rng_i = rng[i] + sagnac * (
+            xsat[i, 0] * x[1] - xsat[i, 1] * x[0]
+        )
+        residuals[i] = rng_i - (pr[i] - x[3])
+
     return residuals
 
 
+@njit(fastmath=True)
 def prr_residuals(v: np.ndarray, vsat: np.ndarray, prr: np.ndarray, x: np.ndarray, xsat: np.ndarray) -> np.ndarray:
     """
     Compute pseudorange rate residuals.
@@ -101,15 +132,25 @@ def prr_residuals(v: np.ndarray, vsat: np.ndarray, prr: np.ndarray, x: np.ndarra
     residuals : ndarray, shape (n_sat,)
     """
     u, _ = los_vector(x[:3], xsat)
-    rate = np.zeros(xsat.shape[0])
+    n = xsat.shape[0]
 
-    for i in range(xsat.shape[0]):
-        rate[i] = np.dot(vsat[i, :3] - v[:3], u[i])
-        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
-            vsat[i, 1] * x[0] + xsat[i, 1] * v[0] - vsat[i, 0] * x[1] - xsat[i, 0] * v[1]
+    residuals = np.empty(n, dtype=np.float64)
+    sagnac = EARTH_ROTATION_SPEED / SPEED_OF_LIGHT
+
+    for i in range(n):
+        rate = (
+            (vsat[i, 0] - v[0]) * u[i, 0]
+            + (vsat[i, 1] - v[1]) * u[i, 1]
+            + (vsat[i, 2] - v[2]) * u[i, 2]
         )
 
-    residuals = rate - (prr - v[3])
+        rate += sagnac * (
+            vsat[i, 1] * x[0] + xsat[i, 1] * v[0]
+            - vsat[i, 0] * x[1] - xsat[i, 0] * v[1]
+        )
+
+        residuals[i] = rate - (prr[i] - v[3])
+
     return residuals
 
 def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, max_iters: int=50, tol: float=1e-6):
@@ -161,7 +202,7 @@ def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, 
 ##########################################################################################
 #
 # The following are PyTorch versions of the above functions for use with pytorch autograd.
-# They mirror the numpy implementations but use torch tensors and maths functions.
+# They mirror the other implementations but use torch tensors and maths functions.
 # Torch tensors shouldn't be used normally since they are slower to work with.
 #
 ##########################################################################################

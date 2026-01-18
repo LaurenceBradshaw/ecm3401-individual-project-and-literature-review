@@ -30,7 +30,7 @@ def get_ground_truth(truth_df: pd.DataFrame, epoch_df: pd.DataFrame) -> tuple[to
     vel_truth = torch.tensor(vel_truth, dtype=torch.float32, device=get_device())
     return pos_truth, vel_truth
 
-def compute_pos(epoch_df: pd.DataFrame, pr_weights: torch.Tensor, pr_correction: torch.Tensor, prr_weights: torch.Tensor, curr_pos: dict) -> dict:
+def compute_pos_torch(epoch_df: pd.DataFrame, pr_weights: torch.Tensor | None, pr_correction: torch.Tensor | None, prr_weights: torch.Tensor | None, curr_pos: dict | None) -> dict:
     # Grab the required columns and convert to tensors
     pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float32, device=get_device())
     if pr_correction is not None:
@@ -43,14 +43,31 @@ def compute_pos(epoch_df: pd.DataFrame, pr_weights: torch.Tensor, pr_correction:
     curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
     return curr_pos
 
-def compute_residual_matrix(epoch_df: pd.DataFrame) -> torch.Tensor:
-    n_sats = len(epoch_df)
-    device = get_device()
+def compute_pos(epoch_df: pd.DataFrame, pr_weights: np.ndarray | None, pr_correction: np.ndarray | None, prr_weights: np.ndarray | None, curr_pos: dict | None) -> dict:
+    # Extract columns once, no torch, no devices
+    pr = epoch_df[PR_COL].to_numpy(dtype=np.float64)
+    if pr_correction is not None:
+        pr = pr + pr_correction
 
-    residual_matrix = torch.zeros(
+    prr = epoch_df[PRR_COL].to_numpy(dtype=np.float64)
+    sat_pos = epoch_df[SAT_POS_COLS].to_numpy(dtype=np.float64)
+    sat_vel = epoch_df[SAT_VEL_COLS].to_numpy(dtype=np.float64)
+
+    curr_pos = gp.position(pr,prr,sat_pos,sat_vel,Wx=pr_weights,Wv=prr_weights,prev_estimate=curr_pos)
+
+    return curr_pos
+
+def compute_residual_matrix(epoch_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    n_sats = len(epoch_df)
+
+    pr_residual_matrix = np.zeros(
         (n_sats, n_sats),
-        dtype=torch.float32,
-        device=device,
+        dtype=np.float32,
+    )
+
+    prr_residual_matrix = np.zeros(
+        (n_sats, n_sats),
+        dtype=np.float32,
     )
 
     # Ensure unique satellite + signal identity
@@ -65,31 +82,38 @@ def compute_residual_matrix(epoch_df: pd.DataFrame) -> torch.Tensor:
     sat_num = 0
     for row_idx, sat_row in epoch_df.iterrows():
         excluded_key = (sat_row["ConstellationType"], sat_row["Svid"], sat_row["SignalType"])
-
         included_mask = [key != excluded_key for key in sat_keys]
-
         included_sats = epoch_df[included_mask]
 
         curr_pos = compute_pos(included_sats, None, None, None, curr_pos=None)
 
         pr = included_sats[PR_COL].to_numpy()
+        prr = included_sats[PRR_COL].to_numpy()
         sat_pos = included_sats[SAT_POS_COLS].to_numpy()
+        sat_vel = included_sats[SAT_VEL_COLS].to_numpy()
 
         x = np.zeros(4)
         x[:3] = curr_pos["position"]
         x[3] = curr_pos["clock_bias"]
 
+        v = np.zeros(4)
+        v[:3] = curr_pos["velocity"]
+        v[3] = curr_pos["clock_drift"]
+
         # Residuals for included satellites only (length N-1)
-        res = gp.pr_residuals(x, sat_pos, pr)
+        pr_res = gp.pr_residuals(x, sat_pos, pr)
+        prr_res = gp.prr_residuals(v, sat_vel, prr, x, sat_pos)
 
         # Insert into full row
         col_indices = [
             i for i, key in enumerate(sat_keys) if key != excluded_key
         ]
-        residual_matrix[sat_num, col_indices] = torch.from_numpy(res.astype(np.float32)).to(device)
+        pr_residual_matrix[sat_num, col_indices] = pr_res.astype(np.float32)
+        prr_residual_matrix[sat_num, col_indices] = prr_res.astype(np.float32)
 
-        # Diagonal explicitly set (sentinel)
-        residual_matrix[sat_num, sat_num] = 0.0
+        # Diagonal explicitly set
+        pr_residual_matrix[sat_num, sat_num] = 0.0
+        prr_residual_matrix[sat_num, sat_num] = 0.0
         sat_num += 1
 
-    return residual_matrix
+    return pr_residual_matrix, prr_residual_matrix
