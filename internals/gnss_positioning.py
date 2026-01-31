@@ -1,11 +1,8 @@
 import torch
 import numpy as np
+from internals.constants import EARTH_ROTATION_SPEED, SPEED_OF_LIGHT
 import internals.coord_systems as coords
 from numba import njit
-
-# Constants
-EARTH_ROTATION_SPEED = 7.292115e-5  # rad/s
-SPEED_OF_LIGHT = 299792458.0        # m/s
 
 @njit(fastmath=True)
 def los_vector(xusr: np.ndarray, xsat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -515,21 +512,23 @@ class Kalman_filter:
     def __init__(
         self,
         dt=1.0,
-        sigma_acc=0.5,  # m/s^2 accel noise
-        sigma_p=3.0,    # m GPS pos noise
-        sigma_v=0.1,    # m/s GPS vel noise
-        sigma_b=10.0,   # m clock bias std dev
-        sigma_d=1.0,    # m/s clock drift std dev
-        sigma_p0=10.0,  # initial pos uncertainty
-        sigma_v0=2.0,   # initial vel uncertainty
-        sigma_b0=100.0, # initial clock bias uncertainty
-        sigma_d0=10.0,  # initial clock drift uncertainty
+        # Process noise
+        sigma_acc = 0.5,      # m/s2 - acceleration noise (car can accelerate ~0-5 m/s2)
+        sigma_b = 10.0,       # m - clock bias process noise (~10m equivalent)
+        sigma_d = 0.1,        # m/s - clock drift process noise
+        # Measurement noise (depends on your measurement source quality)
+        sigma_p = 5.0,        # m - position measurement noise (typical GNSS solution)
+        sigma_v = 0.1,        # m/s - velocity measurement noise
+        # Initial uncertainty
+        sigma_p0 = 10.0,      # m - initial position uncertainty
+        sigma_v0 = 5.0,       # m/s - initial velocity uncertainty  
+        sigma_b0 = 100.0,     # m - initial clock bias uncertainty (~100m equivalent)
+        sigma_d0 = 1.0,       # m/s - initial clock drift uncertainty
     ):
         self.initialised_ = False
         self.dt_ = dt
 
         I3 = np.eye(3)
-        Z3 = np.zeros((3, 3))
 
         # State transition F (8x8)
         self.F_ = np.eye(8)

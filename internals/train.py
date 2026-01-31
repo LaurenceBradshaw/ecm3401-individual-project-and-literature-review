@@ -6,12 +6,8 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from internals.coord_systems import lla_to_ecef, ecef_to_lla, heading_speed_to_ecef
 from internals import gnss_positioning as gp
+from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.common as common
-
-PR_COL = 'CorrectedPseudorange'
-PRR_COL = 'CorrectedPseudorangeRateMetersPerSecond'
-SAT_POS_COLS = ['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']
-SAT_VEL_COLS = ['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']
 
 def setup(base_path: str, network_cls: torch.nn.Module) -> None:
     global net, optimizer, features

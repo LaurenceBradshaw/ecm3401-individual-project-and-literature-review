@@ -1,16 +1,14 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import folium
+from folium.plugins import TimestampedGeoJson
 from internals.coord_systems import ecef_to_lla, lla_to_ecef
 from internals.gnss_positioning import Kalman_filter
+from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.gnss_positioning as gp
 import internals.common as common
-
-PR_COL = 'CorrectedPseudorange'
-PRR_COL = 'CorrectedPseudorangeRateMetersPerSecond'
-SAT_POS_COLS = ['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']
-SAT_VEL_COLS = ['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']
 
 def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
     global net, features, kf_enabled
@@ -38,11 +36,15 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
     estimated_positions_baseline_lla = np.zeros((N, 3))
     estimated_positions_baseline_ecef = np.zeros((N, 3))
     estimated_speed_baseline = np.zeros((N,))
+    pseudoranges = []
+    sat_positions_ecef = []
     sat_trajectories = {}
+    residuals = []
 
     curr_pos = None
     kf = Kalman_filter()
     kf_baseline = Kalman_filter()
+
     # Initial position estimate using first epoch otherwise gradients are terrible initially
     pr = df[df['epoch_id'] == 0][PR_COL].to_numpy()
     prr = df[df['epoch_id'] == 0][PRR_COL].to_numpy()
@@ -66,6 +68,8 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
         truth_positions_lla[i, :] = pos_truth
         truth_positions_ecef[i, :] = lla_to_ecef(pos_truth.cpu().numpy())
         truth_speed[i] = gt_row['SpeedMps'].to_numpy()
+        pseudoranges.append({row['sat_identifier']: row[PR_COL] for _, row in epoch_df.iterrows()})
+        sat_positions_ecef.append({row['sat_identifier']: row[SAT_POS_COLS].to_numpy() for _, row in epoch_df.iterrows()})
 
         feats = get_feats(epoch_df, features, common.get_device())
         with torch.no_grad():
@@ -89,6 +93,11 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
 
         pr = pr + pr_error
         curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
+
+        x = torch.zeros(4, dtype=torch.float32, device='cpu')
+        x[0:3] = torch.tensor(truth_positions_ecef[i, :], dtype=torch.float32, device='cpu')
+        x[3] = curr_pos["clock_bias"]
+        residuals.append(gp.pr_residuals_torch(x, sat_pos, pr - pr_error).cpu().numpy())
 
         if kf_enabled:
             kf.predict()
@@ -220,5 +229,88 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
         folium.CircleMarker(location=path[0], radius=3, color="purple", fill=True).add_to(m)
         folium.CircleMarker(location=path[-1], radius=3, color="black", fill=True).add_to(m)
 
+    # timestamps = df.groupby("epoch_id")["utcTimeMillis"].mean().apply(lambda ms: pd.to_datetime(ms, unit='ms')).to_numpy()
+    # geo_features = []
+
+    # for epoch_idx, timestamp in enumerate(timestamps):
+    #     truth_ecef = truth_positions_ecef[epoch_idx]  # shape (3,)
+
+    #     for sv_id, sat_ecef in sat_positions_ecef[epoch_idx].items():
+    #         if sv_id not in pseudoranges[epoch_idx]:
+    #             continue
+
+    #         pseudorange_m = pseudoranges[epoch_idx][sv_id]
+    #         sat_ecef = np.array(sat_ecef, dtype=float).flatten()  # ensure proper shape
+
+    #         los = truth_ecef - sat_ecef
+    #         los_norm = np.linalg.norm(los)
+    #         if los_norm <= 0.0:
+    #             continue
+
+    #         unit_los = los / los_norm
+    #         delta_m = pseudorange_m - los_norm
+    #         endpoint_ecef = truth_ecef + delta_m * unit_los
+
+    #         sat_lla = ecef_to_lla(sat_ecef)
+    #         end_lla = ecef_to_lla(endpoint_ecef)
+
+    #         if np.isnan(sat_lla).any() or np.isnan(end_lla).any():
+    #             continue  # skip invalid points
+
+    #         geo_features.append({
+    #             "type": "Feature",
+    #             "geometry": {
+    #                 "type": "LineString",
+    #                 "coordinates": [
+    #                     [sat_lla[1], sat_lla[0]],
+    #                     [end_lla[1], end_lla[0]],
+    #                 ],
+    #             },
+    #             "properties": {
+    #                 "time": pd.Timestamp(timestamp).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    #                 "popup": (
+    #                     f"SV: {sv_id}<br>"
+    #                     f"Geom range: {los_norm:.3f} m<br>"
+    #                     f"Pseudorange: {pseudorange_m:.3f} m<br>"
+    #                     f"Bias: {pseudorange_m - los_norm:.3f} m"
+    #                 ),
+    #                 "style": {"color": "orange", "weight": 2, "opacity": 0.7},
+    #             },
+    #         })
+
+    # TimestampedGeoJson(
+    #     {
+    #         "type": "FeatureCollection",
+    #         "features": geo_features,
+    #     },
+    #     period="PT1S",
+    #     duration="PT1S",
+    #     add_last_point=False,
+    #     auto_play=False,
+    #     loop=False,
+    #     max_speed=1,
+    #     loop_button=True,
+    #     time_slider_drag_update=True,
+    # ).add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
+
     m.save(save_name)
     print(f"Saved {save_name}")
+
+    # Residuals scatter plot
+    residuals_list = np.array(residuals, dtype=object)
+    all_residuals = np.concatenate(residuals_list)
+
+    # X-axis: epoch index repeated for each residual
+    epoch_indices = np.concatenate([
+        np.full(len(r), i) for i, r in enumerate(residuals_list)
+    ])
+
+    plt.figure(figsize=(10, 5))
+    plt.scatter(epoch_indices, all_residuals, alpha=0.7)
+    plt.xlabel("Epoch")
+    plt.ylabel("Residual")
+    plt.title("Residuals per Epoch")
+    plt.grid(True)
+    plt.show()
+    plt.savefig("pseudorange_residuals.png")

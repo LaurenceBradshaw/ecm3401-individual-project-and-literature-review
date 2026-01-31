@@ -2,12 +2,8 @@ import pandas as pd
 import numpy as np
 import torch
 from internals.coord_systems import lla_to_ecef, heading_speed_to_ecef
+from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.gnss_positioning as gp
-
-PR_COL = 'CorrectedPseudorange'
-PRR_COL = 'CorrectedPseudorangeRateMetersPerSecond'
-SAT_POS_COLS = ['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']
-SAT_VEL_COLS = ['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']
 
 device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def get_device() -> torch.device:
