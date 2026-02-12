@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 class WGS84:
     A = 6378137.0               # semi-major axis [m]
@@ -27,6 +28,25 @@ def ecef_to_lla(ecef):
 
     return np.array([np.rad2deg(lat), np.rad2deg(lon), alt])
 
+def ecef_to_lla_torch(ecef):
+    x, y, z = ecef
+
+    lon = torch.atan2(y, x)
+    p = torch.sqrt(x**2 + y**2)
+
+    # Bowring’s method for initial latitude
+    theta = torch.atan2(z * WGS84.A, p * WGS84.B)
+    lat = torch.atan2(
+        z + WGS84.EP2 * WGS84.B * torch.sin(theta)**3,
+        p - WGS84.E2 * WGS84.A * torch.cos(theta)**3
+    )
+
+    sin_lat = torch.sin(lat)
+    N = WGS84.A / torch.sqrt(1 - WGS84.E2 * sin_lat**2)
+    alt = p / torch.cos(lat) - N
+
+    return torch.stack([torch.rad2deg(lat), torch.rad2deg(lon), alt])
+
 
 def lla_to_ecef(lla):
     lat, lon, alt = lla
@@ -42,6 +62,21 @@ def lla_to_ecef(lla):
     z = (N * (1 - WGS84.E2) + alt) * sin_lat
 
     return np.array([x, y, z])
+
+def lla_to_ecef_torch(lla):
+    lat, lon, alt = lla
+    lat, lon = torch.deg2rad(lat), torch.deg2rad(lon)
+
+    sin_lat, cos_lat = torch.sin(lat), torch.cos(lat)
+    sin_lon, cos_lon = torch.sin(lon), torch.cos(lon)
+
+    N = WGS84.A / torch.sqrt(1 - WGS84.E2 * sin_lat**2)
+
+    x = (N + alt) * cos_lat * cos_lon
+    y = (N + alt) * cos_lat * sin_lon
+    z = (N * (1 - WGS84.E2) + alt) * sin_lat
+
+    return torch.stack([x, y, z])
 
 def ecef_to_neu_rot(ref_ecef):
     ref_lla = ecef_to_lla(ref_ecef)
@@ -141,3 +176,32 @@ def heading_speed_to_ecef(heading_deg, speed_m_s, lat_deg, lon_deg):
     v_ecef = speed[:, None] * dir_ecef
     
     return v_ecef[0]
+
+def errors_haversine(est_lla, truth_lla):
+    est = np.atleast_2d(est_lla).astype(np.float64)
+    truth = np.atleast_2d(truth_lla).astype(np.float64)
+
+    lat1 = np.deg2rad(truth[:, 0])
+    lon1 = np.deg2rad(truth[:, 1])
+    lat2 = np.deg2rad(est[:, 0])
+    lon2 = np.deg2rad(est[:, 1])
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = (
+        np.sin(dlat / 2.0)**2 +
+        np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0)**2
+    )
+
+    c = 2.0 * np.arcsin(np.sqrt(a))
+    horizontal_error = WGS84.A * c
+
+    vertical_error = est[:, 2] - truth[:, 2]
+    error_3d = np.sqrt(horizontal_error**2 + vertical_error**2)
+
+    # Return scalars if input was (3,)
+    if est_lla.ndim == 1:
+        return horizontal_error[0], vertical_error[0], error_3d[0]
+
+    return horizontal_error, vertical_error, error_3d

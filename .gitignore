@@ -8,3 +8,4 @@ cn0_figs/
 *.html
 *.pt
 *.png
+preprocess_hash_table.json

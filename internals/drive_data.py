@@ -4,9 +4,11 @@ import pandas as pd
 
 
 class Drive:
-    def __init__(self, drive_path: str, preprocessed: bool = True) -> None:
+    def __init__(self, drive_path: str, preprocessed: bool = True, mode: str = "test", part: int = 0) -> None:
         self.drive_path_ = drive_path
         self.preprocessed_ = preprocessed
+        self.mode_ = mode
+        self.part_ = part
 
         if not os.path.exists(self.drive_path_):
             raise FileNotFoundError(f"Path does not exist: {self.drive_path_}")
@@ -17,11 +19,12 @@ class Drive:
         self.device_gnss_df_ = None
         self.ground_truth_df_ = None
 
-        self._load_files()
-
     def _load_files(self) -> None:
         if self.preprocessed_:
-            device_gnss_filename = "device_gnss_preprocessed.csv"
+            if self.mode_ == "train":
+                device_gnss_filename = f"device_gnss_preprocessed_part{self.part_}.csv"
+            else:
+                device_gnss_filename = "device_gnss_preprocessed.csv"
         else:
             device_gnss_filename = "device_gnss.csv"
 
@@ -47,14 +50,18 @@ class Drive:
         return os.path.normpath(self.drive_path_)
 
     def get_dataframes(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        self._load_files()
         return self.device_gnss_df_, self.ground_truth_df_
 
 
 class Drive_iterator:
-    def __init__(self, drive_paths: list[str], preprocessed: bool = True) -> None:
+    def __init__(self, drive_paths: list[str], preprocessed: bool = True, mode: str = "test") -> None:
         self.drive_paths_ = drive_paths
         self.preprocessed_ = preprocessed
+        self.mode_ = mode
         self.index_ = 0
+        self.part_num_ = 0
+        self.num_parts_ = 0
 
     def __iter__(self) -> Iterator[Drive]:
         self.index_ = 0
@@ -65,16 +72,54 @@ class Drive_iterator:
             raise StopIteration
 
         drive_path = self.drive_paths_[self.index_]
-        self.index_ += 1
+
+        # Discover parts exactly once per drive
+        if self.part_num_ == 0 and self.mode_ == "train":
+            self.num_parts_ = len([
+                f for f in os.listdir(drive_path)
+                if f.endswith(".csv") and "_part" in f
+            ])
+
+        # Case 1: train mode with remaining parts
+        if self.mode_ == "train" and self.part_num_ < self.num_parts_:
+            self.part_num_ += 1
+            part_num = self.part_num_
+        # Case 2: train mode, parts exhausted -> move to next drive
+        elif self.mode_ == "train":
+            self.part_num_ = 0
+            self.num_parts_ = 0
+            self.index_ += 1
+            return self.__next__()
+        # Case 3: not train mode -> load full drive once
+        else:
+            part_num = 0
+            self.index_ += 1
 
         try:
-            drive = Drive(drive_path, self.preprocessed_)
+            return Drive(
+                drive_path,
+                self.preprocessed_,
+                self.mode_,
+                part_num,
+            )
         except (FileNotFoundError, NotADirectoryError, ValueError) as e:
-            print(f"Skipping drive due to error: {e}")
-            return self.__next__()
+            print(f"Skipping part due to error: {e}")
 
-        return drive
+            # Skip failed part, try next part or drive
+            if self.mode_ == "train" and part_num > 0:
+                return self.__next__()
+
+            self.part_num_ = 0
+            self.num_parts_ = 0
+            self.index_ += 1
+            return self.__next__()
     
     def nitems(self) -> int:
         return len(self.drive_paths_)
+    
+    def nparts(self) -> int:
+        if self.mode_ == "train":
+            return self.num_parts_
+        else:
+            return 1
     

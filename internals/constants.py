@@ -3,6 +3,7 @@
 # Numerical constants
 EARTH_ROTATION_SPEED = 7.292115e-5  # rad/s
 SPEED_OF_LIGHT = 299792458.0        # m/s
+C = SPEED_OF_LIGHT
 
 # Constants for column names
 PR_COL = 'CorrectedPseudorange'

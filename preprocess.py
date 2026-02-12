@@ -1,20 +1,23 @@
+import json
 import pandas as pd
 import os
 import numpy as np
 import math
+import hashlib
+from pathlib import Path
 from collections import defaultdict
 from internals.drive_data import Drive_iterator
 from internals.epoch_manager import Epoch_manager
-from internals import gnss_positioning as gp
+from internals import common, gnss_positioning as gp
+from internals.constants import SAT_POS_COLS, SAT_VEL_COLS, PR_COL, PRR_COL, SPEED_OF_LIGHT
 
 # This file is wildly inefficient since it loops through the data multiple times.
 # TODO: optimise later.
+# TODO: Split this file up into its 3 distinct parts: general processing, dataset stats, subset selection. Then hash can be done for each part
+#       Although there are transitive dependencies. i.e., if general processing changes, then subsequent steps need to be redone. this is the only case.
 
 L1_MIN = 1.55e9
 L1_MAX = 1.61e9
-SPEED_OF_LIGHT = 299792458.0  # m/s
-SAT_POS_COLS = ['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']
-SAT_VEL_COLS = ['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']
 
 CONSTELLATION_MAP = {
     0: 'UNK',
@@ -26,6 +29,16 @@ CONSTELLATION_MAP = {
     6: 'GAL',
     7: 'I'
 }
+
+def hash_current_file() -> str:
+    file_path = Path(__file__).resolve()
+    hasher = hashlib.sha256()
+
+    with file_path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hasher.update(chunk)
+
+    return hasher.hexdigest()
 
 def validate_satellite_data(df: pd.DataFrame, sat_identifier: str, sat_df: pd.DataFrame) -> None:
     # Pretty arbitrary thresholds. Very generous to avoid removing actual fluctuations in the data
@@ -64,8 +77,8 @@ def validate_satellite_data(df: pd.DataFrame, sat_identifier: str, sat_df: pd.Da
     df.loc[idx[bad], 'motion_flag'] = 'bad_motion'
     df.loc[idx[~bad], 'motion_flag'] = 'good_motion'
 
-    pr = g['CorrectedPseudorange'].to_numpy()
-    prr = g['CorrectedPseudorangeRateMetersPerSecond'].to_numpy()
+    pr = g[PR_COL].to_numpy()
+    prr = g[PRR_COL].to_numpy()
 
     pr_jump = np.abs(np.diff(pr))
     pr_rate = pr_jump / dt
@@ -275,8 +288,8 @@ def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch
 
     # Stability metrics
     sat_identifier = sat_row['sat_identifier']
-    pr = sat_row['CorrectedPseudorange']
-    prr = sat_row['CorrectedPseudorangeRateMetersPerSecond']
+    pr = sat_row[PR_COL]
+    prr = sat_row[PRR_COL]
     adr = sat_row['AccumulatedDeltaRangeMeters']
 
     epoch_manager.add_entry(sat_identifier, {'cn0': cn0, 'pr': pr, 'prr': prr, 'adr': adr})
@@ -340,8 +353,8 @@ def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: d
     df.loc[epoch_df.index, 'elevation_rank'] = elevation_rank
 
     # Get pseudoranges and satellite positions
-    pr = epoch_df['CorrectedPseudorange'].to_numpy()
-    prr = epoch_df['CorrectedPseudorangeRateMetersPerSecond'].to_numpy()
+    pr = epoch_df[PR_COL].to_numpy()
+    prr = epoch_df[PRR_COL].to_numpy()
     sat_pos = epoch_df[SAT_POS_COLS].to_numpy()
     sat_vel = epoch_df[SAT_VEL_COLS].to_numpy()
 
@@ -448,7 +461,22 @@ def create_dataset_stats(base_path: str):
 
     print("Dataset statistics saved to dataset_stats.csv")
 
+def adr_is_usable(adr_state):
+    return (
+        adr_state['valid']
+        and not adr_state['reset']
+        and not adr_state['cycle_slip']
+    )
+
 if __name__ == "__main__":
+    # Hash of this python file
+    hash = hash_current_file()
+    if not os.path.exists("preprocess_hash_table.json"):
+        hash_table = {}
+    else:        
+        with open("preprocess_hash_table.json", "r") as f:
+            hash_table = json.load(f)
+
     base_path = "./smartphone-decimeter-2023/sdc2023/train"
     output_file = f"{os.path.dirname(base_path)}/dataset_stats.csv"
     # data_iter = Data_file_iterator(base_path, split='train', preprocessed=False)
@@ -462,6 +490,10 @@ if __name__ == "__main__":
     drive_i = 0
     # TODO: parallelise this processing (will have to log to separate file or something)
     for drive in drive_iter:
+        if drive.get_directory_name() in hash_table and hash_table[drive.get_directory_name()] == hash:
+            print(f"[{drive_i+1}/{n_drives}] Skipping file (already processed with same code): {drive.get_directory_name()}")
+            drive_i += 1
+            continue
         print(f"[{drive_i+1}/{n_drives}] Pre-processing file: {drive.get_directory_name()}")
         drive_i += 1
         df, truth_df = drive.get_dataframes()
@@ -481,7 +513,8 @@ if __name__ == "__main__":
             'SvVelocityZEcefMetersPerSecond',
             'SvElevationDegrees',
             'SvAzimuthDegrees',
-            'Cn0DbHz'
+            'Cn0DbHz',
+            'AccumulatedDeltaRangeMeters'
         ])
 
         if df.empty: # No valid data after filtering
@@ -489,8 +522,8 @@ if __name__ == "__main__":
             continue
 
         # Apply corrections to pseudorange and pseudorange rate
-        df['CorrectedPseudorange'] = df['RawPseudorangeMeters'] - df['IonosphericDelayMeters'] - df['TroposphericDelayMeters'] - df['IsrbMeters'] + df['SvClockBiasMeters']
-        df['CorrectedPseudorangeRateMetersPerSecond'] = df['PseudorangeRateMetersPerSecond'] + df['SvClockDriftMetersPerSecond']
+        df[PR_COL] = df['RawPseudorangeMeters'] - df['IonosphericDelayMeters'] - df['TroposphericDelayMeters'] - df['IsrbMeters'] + df['SvClockBiasMeters']
+        df[PRR_COL] = df['PseudorangeRateMetersPerSecond'] + df['SvClockDriftMetersPerSecond']
 
         # Derived features
         df["sin_elevation"] = np.sin(np.deg2rad(df['SvElevationDegrees']))
@@ -554,8 +587,6 @@ if __name__ == "__main__":
         duplicate_epochs = df.duplicated(subset=['epoch_id', 'ConstellationType', 'Svid', 'SignalType'], keep=False)
         assert not duplicate_epochs.any(), "Duplicate satellite entries still exist after resolution."
         
-        # df['residual_matrix'] = None
-        # df['residual_matrix'] = df['residual_matrix'].astype(object)
         curr_pos = None
         curr_pos_weighted = None
         sat_samples = {}
@@ -577,58 +608,129 @@ if __name__ == "__main__":
                 prr_weights_baseline[i] = compute_prr_baseline_weight(sat_samples, sat_row)
                 i += 1
                 
+                
             # Save weights back to DataFrame
             df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
 
-            # pr_weights_baseline = np.diag(pr_weights_baseline)
-            # prr_weights_baseline = np.diag(prr_weights_baseline)
-            # curr_pos_weighted = gp.position(pr, prr, sat_pos, sat_vel, Wx=pr_weights_baseline, Wv=prr_weights_baseline, prev_estimate=curr_pos_weighted)
-            # gt_row = truth_df.iloc[(truth_df['UnixTimeMillis'] - epoch_df["utcTimeMillis"].mean()).abs().argsort()[:1]]
-            # truth_pos = lla_to_ecef(gt_row[['LatitudeDegrees', 'LongitudeDegrees', 'AltitudeMeters']].to_numpy().flatten())
-            # error_m = np.linalg.norm(curr_pos_weighted['position'] - truth_pos)
-            # df.loc[epoch_df.index, 'baseline_position_error_m'] = error_m
+        prev_epoch = None
+        df['adr_td_residual'] = 0.0
+        df['adr_td_valid'] = 0.0
+        print("Calculating ADR time-differenced residuals...")
+        for epoch_id, epoch_df in df.groupby('epoch_id'):
+            if prev_epoch is not None:
+                common_sats = set(epoch_df['sat_identifier']).intersection(set(prev_epoch['sat_identifier']))
+                for sat_identifier in common_sats:
+                    curr_sat_idx = epoch_df[epoch_df['sat_identifier'] == sat_identifier].index[0]
+                    prev_sat_idx = prev_epoch[prev_epoch['sat_identifier'] == sat_identifier].index[0]
+                    curr_state = epoch_df.loc[curr_sat_idx, ['valid', 'reset', 'cycle_slip']].astype(bool)
+                    prev_state = prev_epoch.loc[prev_sat_idx, ['valid', 'reset', 'cycle_slip']].astype(bool)
+                    if not (adr_is_usable(curr_state) and adr_is_usable(prev_state)):
+                        df.loc[curr_sat_idx, 'adr_td_residual'] = 0.0
+                        df.loc[curr_sat_idx, 'adr_td_valid'] = 0.0
+                        continue
+                    
+                    curr_adr = epoch_df.loc[curr_sat_idx, 'AccumulatedDeltaRangeMeters']
+                    prev_adr = prev_epoch.loc[prev_sat_idx, 'AccumulatedDeltaRangeMeters']
+                    curr_pr_rate = epoch_df.loc[curr_sat_idx, 'PseudorangeRateMetersPerSecond']
 
-            # prr_unc = epoch_df['PseudorangeRateUncertaintyMetersPerSecond'].to_numpy()
-            # prr_weights_baseline = 1.0 / (prr_unc + 1e-6)
-            # prr_weights_baseline /= np.mean(prr_weights_baseline)
-            # prr_weights_baseline = np.maximum(prr_weights_baseline, 0.05)
-            # df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
+                    dt = (epoch_df.loc[curr_sat_idx, 'utcTimeMillis'] - prev_epoch.loc[prev_sat_idx, 'utcTimeMillis']) / 1000.0
 
-            # # For each satellite, exclude it and compute position with remaining satellites
-            # for idx, sat_row in epoch_df.iterrows():
-            #     excluded_sat = (sat_row['ConstellationType'], sat_row['Svid'], sat_row['SignalType']) # include signal type since it is possible to get both L1 and L5 for same satellite
-            #     included_sats = epoch_df[
-            #         ~((epoch_df['ConstellationType'] == excluded_sat[0]) & (epoch_df['Svid'] == excluded_sat[1]) & (epoch_df['SignalType'] == excluded_sat[2]))
-            #     ]
-            #     assert included_sats.shape[0] == epoch_df.shape[0] - 1, f"Only one satellite should be excluded, but got {included_sats.shape[0]} included vs {epoch_df.shape[0]} total."
+                    delta_adr = curr_adr - prev_adr
+                    predicted_delta = curr_pr_rate * dt
 
-            #     # Get pseudoranges and satellite positions
-            #     pr = included_sats['CorrectedPseudorange'].to_numpy()
-            #     prr = included_sats['CorrectedPseudorangeRateMetersPerSecond'].to_numpy()
-            #     sat_pos = included_sats[['SvPositionXEcefMeters', 'SvPositionYEcefMeters', 'SvPositionZEcefMeters']].to_numpy()
-            #     sat_vel = included_sats[['SvVelocityXEcefMetersPerSecond', 'SvVelocityYEcefMetersPerSecond', 'SvVelocityZEcefMetersPerSecond']].to_numpy()
+                    residual = delta_adr - predicted_delta
 
-            #     # Compute receiver position using least squares with no weighting
-            #     curr_pos = gp.position(pr, prr, sat_pos, sat_vel, prev_estimate=curr_pos)
+                    df.loc[curr_sat_idx, 'adr_td_residual'] = residual
+                    df.loc[curr_sat_idx, 'adr_td_valid'] = 1.0
+            prev_epoch = epoch_df
 
-            #     # Compute residual for all included satellites
-            #     x = np.zeros(4)
-            #     x[:3] = curr_pos["position"]
-            #     x[3] = curr_pos["clock_bias"]
-            #     res = gp.pr_residuals(x, sat_pos, pr)
-            #     df.at[idx, 'residual_matrix'] = res
-        
-        # poor_mask = df['baseline_position_error_m'] > 10.0
-        # poor_region = poor_mask.to_numpy()
-        # poor_indices = np.where(poor_mask)[0]
-        # for idx in poor_indices:
-        #     start = max(0, idx - 10)
-        #     poor_region[start:idx+1] = True
-        
-        # df.loc[df.index, 'poor_region'] = poor_region
         df.to_csv(os.path.join(f"{drive.get_directory_name()}", "device_gnss_preprocessed.csv"), index=False)
+        # Update hash table
+        hash_table[drive.get_directory_name()] = hash
 
+        with open("preprocess_hash_table.json", "w") as f:
+            json.dump(hash_table, f)
+
+    print("Pre-processing complete. Computing dataset statistics...")
     create_dataset_stats(base_path)
+
+    # For each file, find the largest area of pseudorange residuals (from truth), and save as a new file with the 100 surrounding epochs.
+    # Can repeat n times per file.
+    window_size = 100          # Total number of epochs per window
+    half_window = window_size // 2
+    n_parts = 3                # Max number of windows per drive
+
+    drive_iter = Drive_iterator(
+        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+    )
+    print("Creating focused subsets of data based on pseudorange residuals...")
+    drive_i = 0
+    n_drives = drive_iter.nitems()
+    for drive in drive_iter:
+        if f"parts_{drive.get_directory_name()}" in hash_table and hash_table[f"parts_{drive.get_directory_name()}"] == hash:
+            print(f"[{drive_i+1}/{n_drives}] Skipping drive for focused subsets (already processed with same code): {drive.get_directory_name()}")
+            drive_i += 1
+            continue
+        print(f"[{drive_i+1}/{n_drives}] Processing drive for focused subsets: {drive.get_directory_name()}")
+        drive_i += 1
+        df, truth_df = drive.get_dataframes()
+        
+        residuals = []
+        epoch_ids = []
+
+        # Compute residuals per epoch
+        for i, epoch_df in df.groupby('epoch_id'):
+            pos_truth, vel_truth = common.get_ground_truth(truth_df, epoch_df)
+
+            pr = epoch_df[PR_COL].to_numpy()
+            prr = epoch_df[PRR_COL].to_numpy()
+            sat_pos = epoch_df[SAT_POS_COLS].to_numpy()
+            sat_vel = epoch_df[SAT_VEL_COLS].to_numpy()
+
+            x = np.zeros(4, dtype=np.float64)
+            x[0:3] = pos_truth.numpy().flatten()
+            x[3], _ = gp.estimate_rx_clock_bias_and_drift(pr, prr, sat_pos, sat_vel,
+                                                            pos_truth.numpy().flatten(),
+                                                            vel_truth.numpy().flatten())
+
+            residual = gp.pr_residuals(x, sat_pos, pr)
+            residuals.append(residual)
+            epoch_ids.append(i)
+
+        residuals_array = np.array([np.linalg.norm(r) for r in residuals])
+        used_mask = np.zeros_like(residuals_array, dtype=bool)  # Track epochs already in windows
+
+        for part_idx in range(1, n_parts + 1):
+            # Mask already used epochs
+            masked_residuals = np.where(used_mask, -1, residuals_array)
+            if masked_residuals.size <= 0:
+                break
+            if masked_residuals.max() < 0:
+                break  # No remaining residuals
+
+            idx_max = masked_residuals.argmax()
+
+            # Determine window boundaries
+            start = max(0, idx_max - half_window)
+            end = min(len(residuals), idx_max + half_window)
+
+            # Mark these epochs as used
+            used_mask[start:end] = True
+
+            selected_epochs = epoch_ids[start:end]
+
+            df_to_save = df[df['epoch_id'].isin(selected_epochs)].copy()
+
+            out_path = os.path.join(drive.get_directory_name(), f"device_gnss_preprocessed_part{part_idx}.csv")
+            df_to_save.to_csv(out_path, index=False)
+
+        # Update hash table
+        hash_table[f"parts_{drive.get_directory_name()}"] = hash
+
+        with open("preprocess_hash_table.json", "w") as f:
+            json.dump(hash_table, f)
+
+        
 
 
 

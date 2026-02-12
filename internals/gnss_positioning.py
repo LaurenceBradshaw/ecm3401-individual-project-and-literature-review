@@ -217,6 +217,18 @@ def jacobian_residuals_torch(x: torch.Tensor, xsat: torch.Tensor) -> torch.Tenso
     J[:, 3] = 1.0
     return J
 
+# def jacobian_residuals_torch(x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
+#     u, _ = los_vector_torch(x[:3], xsat)
+
+#     J = torch.zeros((xsat.shape[0], 4), dtype=x.dtype, device=x.device)
+
+#     J[:, 0] = -u[:, 0] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 1]
+#     J[:, 1] = -u[:, 1] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 0]
+#     J[:, 2] = -u[:, 2]
+
+#     J[:, 3] = 1.0
+#     return J
+
 def pr_residuals_torch(x: torch.Tensor, xsat: torch.Tensor, pr: torch.Tensor) -> torch.Tensor:
     u, rng = los_vector_torch(x[:3], xsat)
     rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (xsat[:, 0] * x[1] - xsat[:, 1] * x[0])
@@ -507,6 +519,315 @@ def position_torch(
     }
 
     return new_pos
+
+def estimate_rx_clock_bias_torch(pr: torch.Tensor, sat_pos: torch.Tensor, truth_position: torch.Tensor) -> torch.Tensor:
+    """
+    Estimate GNSS receiver clock bias given truth position and pseudoranges.
+
+    Parameters
+    ----------
+    pr : torch.Tensor, shape (n_sats,)
+        Pseudorange measurements.
+    sat_pos : torch.Tensor, shape (n_sats, 3)
+        Satellite ECEF positions.
+    truth_position : torch.Tensor, shape (3,)
+        Known receiver position.
+
+    Returns
+    -------
+    clock_bias : torch.Tensor
+        Estimated receiver clock bias in metres.
+    """
+    n_sats = pr.shape[0]
+    if n_sats < 4:
+        raise ValueError("At least 4 satellites are required to estimate clock bias.")
+
+    # Initial guess: truth position + zero clock bias
+    x0 = torch.zeros(4, dtype=pr.dtype, device=pr.device)
+    x0[:3] = truth_position
+    x0[3] = 0.0
+
+    # Weight matrix (identity)
+    W = torch.eye(n_sats, dtype=pr.dtype, device=pr.device)
+
+    # Solve for clock bias (position fixed at truth)
+    result = least_squares_torch(
+        x0,
+        lambda x: pr_residuals_torch(x, sat_pos, pr),
+        lambda x: jacobian_residuals_torch(x, sat_pos),
+        W
+    )
+
+    return result[3]
+
+def estimate_rx_clock_bias_analytical_torch(
+    pr: torch.Tensor,
+    xsat: torch.Tensor,
+    truth_position: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Analytical receiver clock bias estimate (metres),
+    consistent with pr_residuals_torch.
+    """
+    if pr.shape[0] < 4:
+        raise ValueError("At least 4 satellites are required")
+
+    # Compute geometric range with Earth rotation correction
+    _, rng = los_vector_torch(truth_position, xsat)
+    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+        xsat[:, 0] * truth_position[1] -
+        xsat[:, 1] * truth_position[0]
+    )
+
+    # b = mean(pr - rng)
+    clock_bias = (pr - rng).mean()
+
+    return clock_bias
+
+def estimate_rx_clock_drift_analytical_torch(
+    prr: torch.Tensor,
+    xsat: torch.Tensor,
+    vsat: torch.Tensor,
+    truth_position: torch.Tensor,
+    truth_velocity: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Analytical receiver clock drift estimate (m/s),
+    consistent with prr_residuals_torch.
+    """
+    if prr.shape[0] < 4:
+        raise ValueError("At least 4 satellites are required")
+
+    u, _ = los_vector_torch(truth_position, xsat)
+
+    rate = torch.zeros_like(prr)
+
+    for i in range(xsat.shape[0]):
+        rate[i] = torch.dot(vsat[i, :3] - truth_velocity, u[i])
+        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[i, 1] * truth_position[0]
+            + xsat[i, 1] * truth_velocity[0]
+            - vsat[i, 0] * truth_position[1]
+            - xsat[i, 0] * truth_velocity[1]
+        )
+
+    # b_dot = mean(prr - rate)
+    clock_drift = (prr - rate).mean()
+
+    return clock_drift
+
+def estimate_rx_clock_bias_and_drift_torch(
+    pr: torch.Tensor,
+    prr: torch.Tensor,
+    sat_pos: torch.Tensor,
+    sat_vel: torch.Tensor,
+    truth_position: torch.Tensor,
+    truth_velocity: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Estimate receiver clock bias and drift using truth position and velocity.
+
+    Returns
+    -------
+    clock_bias : torch.Tensor
+        Receiver clock bias [m]
+    clock_drift : torch.Tensor
+        Receiver clock drift [m/s]
+    """
+    if pr.shape[0] < 4:
+        raise ValueError("At least 4 satellites are required")
+
+    # Geometric terms
+    rho = estimate_rx_clock_bias_analytical_torch(
+        pr, sat_pos, truth_position
+    )
+    rho_dot = estimate_rx_clock_drift_analytical_torch(
+        prr, sat_pos, sat_vel, truth_position, truth_velocity
+    )
+
+    return rho, rho_dot
+
+def estimate_rx_clock_bias_analytical(
+    pr: np.ndarray,
+    xsat: np.ndarray,
+    truth_position: np.ndarray,
+) -> np.ndarray:
+    """
+    Analytical receiver clock bias estimate (metres),
+    consistent with pr_residuals.
+    """
+    if pr.shape[0] < 4:
+        raise ValueError("At least 4 satellites are required")
+
+    # Compute geometric range with Earth rotation correction
+    _, rng = los_vector(truth_position, xsat)
+    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+        xsat[:, 0] * truth_position[1] -
+        xsat[:, 1] * truth_position[0]
+    )
+
+    # b = mean(pr - rng)
+    clock_bias = (pr - rng).mean()
+
+    return clock_bias
+
+def estimate_rx_clock_drift_analytical(
+    prr: np.ndarray,
+    xsat: np.ndarray,
+    vsat: np.ndarray,
+    truth_position: np.ndarray,
+    truth_velocity: np.ndarray,
+) -> np.ndarray:
+    """
+    Analytical receiver clock drift estimate (m/s),
+    consistent with prr_residuals.
+    """
+    if prr.shape[0] < 4:
+        raise ValueError("At least 4 satellites are required")
+
+    u, _ = los_vector(truth_position, xsat)
+
+    rate = np.zeros_like(prr)
+
+    for i in range(xsat.shape[0]):
+        rate[i] = np.dot(vsat[i, :3] - truth_velocity, u[i])
+        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[i, 1] * truth_position[0]
+            + xsat[i, 1] * truth_velocity[0]
+            - vsat[i, 0] * truth_position[1]
+            - xsat[i, 0] * truth_velocity[1]
+        )
+
+    # b_dot = mean(prr - rate)
+    clock_drift = (prr - rate).mean()
+
+    return clock_drift
+
+def estimate_rx_clock_bias_and_drift(
+    pr: np.ndarray,
+    prr: np.ndarray,
+    sat_pos: np.ndarray,
+    sat_vel: np.ndarray,
+    truth_position: np.ndarray,
+    truth_velocity: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Estimate receiver clock bias and drift using truth position and velocity.
+
+    Returns
+    -------
+    clock_bias : np.ndarray
+        Receiver clock bias [m]
+    clock_drift : np.ndarray
+        Receiver clock drift [m/s]
+    """
+    if pr.shape[0] < 4:
+        raise ValueError("At least 4 satellites are required")
+
+    # Geometric terms
+    rho = estimate_rx_clock_bias_analytical(
+        pr, sat_pos, truth_position
+    )
+    rho_dot = estimate_rx_clock_drift_analytical(
+        prr, sat_pos, sat_vel, truth_position, truth_velocity
+    )
+
+    return rho, rho_dot
+
+def estimate_clock_bias_via_pseudoinverse(
+    x_true: torch.Tensor,
+    xsat: torch.Tensor,
+    pr: torch.Tensor
+) -> torch.Tensor:
+    W = torch.eye(pr.shape[0], dtype=pr.dtype, device=pr.device)
+    # Ensure we only use true position
+    x_pos = x_true[:3]
+
+    # Line-of-sight and geometric range
+    u, rng = los_vector_torch(x_pos, xsat)
+
+    # Apply Earth rotation (Sagnac) correction exactly as in your residual model
+    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+        xsat[:, 0] * x_pos[1] - xsat[:, 1] * x_pos[0]
+    )
+
+    # Pseudorange error (measured - true geometry)
+    delta_rho = pr - rng
+
+    H = jacobian_residuals_torch(x_true, xsat)
+
+    H_w = W @ H
+    HTH = H_w.T @ H_w
+
+    # Weighted pseudoinverse
+    H_pinv = torch.linalg.solve(HTH, H_w.T @ W)  # (4, m)
+
+    # Final row corresponds to clock
+    p_delta_t = H_pinv[3]  # (m,)
+
+    delta_clock_m = p_delta_t @ delta_rho
+
+    return delta_clock_m
+
+def estimate_clock_drift_via_pseudoinverse(
+    x_true: torch.Tensor,
+    v_true: torch.Tensor,
+    xsat: torch.Tensor,
+    vsat: torch.Tensor,
+    prr: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Estimate clock drift (c * delta_t_dot) in metres per second
+    via weighted pseudoinverse projection using truth geometry.
+
+    Args:
+        x_true: (4,) true position state [x, y, z, c*dt]
+        v_true: (4,) true velocity state [vx, vy, vz, c*dtdot]
+        xsat:   (m, 3) satellite positions
+        vsat:   (m, 3) satellite velocities
+        prr:    (m,) measured pseudorange rates (m/s)
+
+    Returns:
+        delta_clock_drift_mps: scalar clock drift in metres per second
+    """
+
+    m = prr.shape[0]
+    W = torch.eye(m, dtype=prr.dtype, device=prr.device)
+
+    # True LOS vectors
+    u, _ = los_vector_torch(x_true[:3], xsat)
+
+    # True geometric range rate
+    rate = torch.zeros(m, dtype=prr.dtype, device=prr.device)
+
+    for i in range(m):
+        rate[i] = torch.dot(vsat[i, :3] - v_true[:3], u[i])
+        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[i, 1] * x_true[0]
+            + xsat[i, 1] * v_true[0]
+            - vsat[i, 0] * x_true[1]
+            - xsat[i, 0] * v_true[1]
+        )
+
+    # Pseudorange rate error (measured - true geometry)
+    delta_rho_dot = prr - rate
+
+    # PRR Jacobian wrt velocity state
+    H = torch.zeros((m, 4), dtype=prr.dtype, device=prr.device)
+    H[:, :3] = -u
+    H[:, 3] = 1.0
+
+    # Weighted pseudoinverse
+    H_w = W @ H
+    HTH = H_w.T @ H_w
+    H_pinv = torch.linalg.solve(HTH, H_w.T @ W)
+
+    # Clock drift row
+    p_delta_t_dot = H_pinv[3]
+
+    delta_clock_drift_mps = p_delta_t_dot @ delta_rho_dot
+
+    return delta_clock_drift_mps
 
 class Kalman_filter:
     def __init__(

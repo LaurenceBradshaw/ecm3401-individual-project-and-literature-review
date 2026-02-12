@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+torch.set_default_dtype(torch.float64)
 
 class Normalise(nn.Module):
     def __init__(self):
@@ -140,36 +141,6 @@ class Pairwise_attention_encoder(nn.Module):
 
 class Gnss_single_epoch_net(nn.Module):
 
-    # features = [
-    #     'Cn0DbHz_linear',          # signal strength
-    #     'sin_elevation',           # sat geometry
-    #     'cos_elevation',           # sat geometry
-    #     'sin_azimuth',             # sat geometry
-    #     'cos_azimuth',             # sat geometry
-    #     'residual',                # pseudorange residual (from WLS)
-    #     'rate_residual',
-    #     'Cn0DbHz_diff',            # signal strength diff from calibrated based on elevation angle
-    #     'pr_baseline_weight',
-    #     'prr_baseline_weight',
-    #     'doppler_residual',
-    #     'MultipathIndicator'
-    # ]
-
-    # _feature_standardise_map = torch.tensor([
-    #     True,   # Cn0DbHz_linear
-    #     True,   # sin_elevation
-    #     True,   # cos_elevation
-    #     True,   # sin_azimuth
-    #     True,   # cos_azimuth
-    #     True,   # residual
-    #     True,   # rate_residual
-    #     True,   # Cn0DbHz_diff
-    #     True,   # pr_baseline_weight
-    #     True,   # prr_baseline_weight
-    #     True,   # doppler_residual
-    #     False,  # MultipathIndicator
-    # ], dtype=torch.bool)
-
     features = [
         'Cn0DbHz_linear',          # signal strength
         'sin_elevation',           # sat geometry
@@ -179,22 +150,24 @@ class Gnss_single_epoch_net(nn.Module):
         'residual',                # pseudorange residual (from WLS)
         'rate_residual',
         'doppler_residual',
-        'cn0_over_sine',
+        # 'cn0_over_sine',
         'cn0_stability',           # signal strength stability over time
         'pr_stability',            # pseudorange stability over time
         'prr_stability',           # pseudorange rate stability over time
+        'adr_td_residual',         # time-differenced ADR residual
+        'adr_td_valid',            # whether the ADR time-differenced residual is valid
         # State indicators
-        'code_lock',
-        'bit_sync',
-        'frame_sync',
-        'time_decoded',
-        'ambiguity_resolved',
+        # 'code_lock',
+        # 'bit_sync',
+        # 'frame_sync',
+        # 'time_decoded',
+        # 'ambiguity_resolved',
         # ADR state indicators
         'valid',
         'reset',
         'cycle_slip',
-        'half_cycle_resolved',
-        'half_cycle_reported',
+        # 'half_cycle_resolved',
+        # 'half_cycle_reported',
     ]
 
     _feature_standardise_map = torch.tensor([
@@ -206,22 +179,24 @@ class Gnss_single_epoch_net(nn.Module):
         True,   # residual
         True,   # rate_residual
         True,   # doppler_residual
-        True,   # cn0_over_sine
+        # True,   # cn0_over_sine
         True,   # cn0_stability
         True,   # pr_stability
         True,   # prr_stability
+        True,   # adr_td_residual
+        False,  # adr_td_valid
         # State indicators
-        False,  # code_lock
-        False,  # bit_sync
-        False,  # frame_sync
-        False,  # time_decoded
-        False,  # ambiguity_resolved
+        # False,  # code_lock
+        # False,  # bit_sync
+        # False,  # frame_sync
+        # False,  # time_decoded
+        # False,  # ambiguity_resolved
         # ADR state indicators
         False,  # valid
         False,  # reset
         False,  # cycle_slip
-        False,  # half_cycle_resolved
-        False,  # half_cycle_reported
+        # False,  # half_cycle_resolved
+        # False,  # half_cycle_reported
     ], dtype=torch.bool)
     
     """
@@ -380,22 +355,24 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         'residual',                # pseudorange residual (from WLS)
         'rate_residual',
         'doppler_residual',
-        'cn0_over_sine',
+        # 'cn0_over_sine',
         'cn0_stability',           # signal strength stability over time
         'pr_stability',            # pseudorange stability over time
         'prr_stability',           # pseudorange rate stability over time
+        'adr_td_residual',         # time-differenced ADR residual
+        'adr_td_valid',            # whether the ADR time-differenced residual is valid
         # State indicators
-        'code_lock',
-        'bit_sync',
-        'frame_sync',
-        'time_decoded',
-        'ambiguity_resolved',
+        # 'code_lock',
+        # 'bit_sync',
+        # 'frame_sync',
+        # 'time_decoded',
+        # 'ambiguity_resolved',
         # ADR state indicators
         'valid',
         'reset',
         'cycle_slip',
-        'half_cycle_resolved',
-        'half_cycle_reported',
+        # 'half_cycle_resolved',
+        # 'half_cycle_reported',
     ]
 
     _feature_standardise_map = torch.tensor([
@@ -407,22 +384,24 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         True,   # residual
         True,   # rate_residual
         True,   # doppler_residual
-        True,   # cn0_over_sine
+        # True,   # cn0_over_sine
         True,   # cn0_stability
         True,   # pr_stability
         True,   # prr_stability
+        True,   # adr_td_residual
+        False,  # adr_td_valid
         # State indicators
-        False,  # code_lock
-        False,  # bit_sync
-        False,  # frame_sync
-        False,  # time_decoded
-        False,  # ambiguity_resolved
+        # False,  # code_lock
+        # False,  # bit_sync
+        # False,  # frame_sync
+        # False,  # time_decoded
+        # False,  # ambiguity_resolved
         # ADR state indicators
         False,  # valid
         False,  # reset
         False,  # cycle_slip
-        False,  # half_cycle_resolved
-        False,  # half_cycle_reported
+        # False,  # half_cycle_resolved
+        # False,  # half_cycle_reported
     ], dtype=torch.bool)
 
     """

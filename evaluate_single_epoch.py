@@ -9,20 +9,20 @@ from model import Gnss_single_epoch_net
 
 
 def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple[torch.Tensor]:
-    feats = epoch_df[features].to_numpy(dtype=np.float32)
-    feats = torch.tensor(feats, dtype=torch.float32, device=device)
+    feats = epoch_df[features].to_numpy(dtype=np.float64)
+    feats = torch.tensor(feats, dtype=torch.float64, device=device)
     pr_res_matrix, prr_res_matrix = compute_residual_matrix(epoch_df)
-    pr_res_matrix = torch.tensor(pr_res_matrix, dtype=torch.float32, device=device)
-    prr_res_matrix = torch.tensor(prr_res_matrix, dtype=torch.float32, device=device)
+    pr_res_matrix = torch.tensor(pr_res_matrix, dtype=torch.float64, device=device)
+    prr_res_matrix = torch.tensor(prr_res_matrix, dtype=torch.float64, device=device)
     return feats, pr_res_matrix, prr_res_matrix
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023/train"
     # drive = Drive(os.path.join(base_path, "2023-05-09-21-32-us-ca-mtv-pe1", "pixel7pro"), preprocessed=True)
-    drive = Drive(os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8"))  # massive los and multipath
+    # drive = Drive(os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8"))  # massive los and multipath
     # drive = Drive(os.path.join(base_path, "2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"))
     # drive = Drive(os.path.join(base_path, "2023-09-06-00-01-us-ca-routen", "pixel4xl"))
-    # drive = Drive(os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"))
+    drive = Drive(os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"))
 
     print(f"Evaluating file: {drive.get_directory_name()}")
     setup(Gnss_single_epoch_net, "single_epoch_network.pt", kf=False)
