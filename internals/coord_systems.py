@@ -15,7 +15,7 @@ def ecef_to_lla(ecef):
     lon = np.arctan2(y, x)
     p = np.sqrt(x**2 + y**2)
 
-    # Bowring’s method for initial latitude
+    # Bowring's method for initial latitude
     theta = np.arctan2(z * WGS84.A, p * WGS84.B)
     lat = np.arctan2(
         z + WGS84.EP2 * WGS84.B * np.sin(theta)**3,
@@ -34,7 +34,7 @@ def ecef_to_lla_torch(ecef):
     lon = torch.atan2(y, x)
     p = torch.sqrt(x**2 + y**2)
 
-    # Bowring’s method for initial latitude
+    # Bowring's method for initial latitude
     theta = torch.atan2(z * WGS84.A, p * WGS84.B)
     lat = torch.atan2(
         z + WGS84.EP2 * WGS84.B * torch.sin(theta)**3,

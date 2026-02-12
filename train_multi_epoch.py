@@ -2,8 +2,9 @@ import pandas as pd
 import os
 import numpy as np
 import torch
+from argparse import ArgumentParser
 from internals.epoch_manager import Epoch_manager
-from internals.train import setup, run
+from internals.train import setup, run, TRAINING_DRIVES
 from internals.drive_data import Drive_iterator
 from internals.common import compute_residual_matrix
 from model import Gnss_multi_epoch_net
@@ -14,13 +15,13 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
     feats_np = epoch_df[features].to_numpy(dtype=np.float64)
     feats = torch.tensor(feats_np, dtype=torch.float64, device=device)
 
-    # ----- 1) update temporal histories -----
+    # update temporal histories
     sat_ids = epoch_df["sat_identifier"].tolist()
 
     for sat_id, feat_vec in zip(sat_ids, feats):
         epoch_manager.add_entry(sat_id, feat_vec.detach().cpu())
 
-    # ----- 2) retrieve per-satellite sequences -----
+    # retrieve per-satellite sequences
     history_dict = epoch_manager.batch_history(sat_ids)
 
     # Build padded tensor: (num_sats, max_len, feat_dim)
@@ -28,7 +29,7 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
     lengths = []
 
     for sat_id in sat_ids:
-        seq_list = history_dict[sat_id]     # list of tensors of shape (feat_dim,)
+        seq_list = history_dict[sat_id] # list of tensors of shape (feat_dim,)
         lengths.append(len(seq_list))
 
         # stack into (len_i, feat_dim)
@@ -55,21 +56,24 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
     return sats_tensor, lengths_tensor, pr_res_matrix, prr_res_matrix
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2023/sdc2023/train"
+    parser = ArgumentParser()
+    parser.add_argument(
+        "-b", "--base_path", 
+        type=str, 
+        default="./smartphone-decimeter-2023/sdc2023/train", 
+        help="Base path to training data. (default: %(default)s)"
+        )
+    parser.add_argument(
+        "-o", "--output_path", 
+        type=str, 
+        default="./multi_epoch_network.pt", 
+        help="Path to save the trained model. (default: %(default)s)"
+        )
+    args = parser.parse_args()
+
+    base_path = args.base_path
     drive_iter = Drive_iterator(
-        # TODO: hand select these
-        # drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
-        drive_paths=[
-            # os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))
-            os.path.join(base_path, "2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"), 
-            os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8"),
-            os.path.join(base_path, "2023-09-06-00-01-us-ca-routen", "pixel4xl"),
-            os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"),
-            os.path.join(base_path, "2023-05-24-20-26-us-ca-sjc-ge2", "pixel7pro"),
-            os.path.join(base_path, "2021-03-10-23-13-us-ca-mtv-h", "mi8"),
-            os.path.join(base_path, "2021-07-27-19-49-us-ca-mtv-b", "mi8"),
-            os.path.join(base_path, "2021-08-04-20-40-us-ca-sjc-c", "sm-g988b"),
-                     ],
+        drive_paths=[os.path.join(base_path, p) for p in TRAINING_DRIVES],
         mode="train"
     )
 
@@ -79,4 +83,4 @@ if __name__ == "__main__":
         print(f"Processing file: {drive.get_directory_name()}")
         df, truth_df = drive.get_dataframes()
         epoch_manager = Epoch_manager(10)
-        run(df, truth_df, get_feats, save_path="multi_epoch_network.pt")
+        run(df, truth_df, get_feats, save_path=args.output_path)

@@ -44,7 +44,7 @@ def validate_satellite_data(df: pd.DataFrame, sat_identifier: str, sat_df: pd.Da
     # Pretty arbitrary thresholds. Very generous to avoid removing actual fluctuations in the data
     MAX_SAT_JUMP_KM = 200.0
     MAX_SAT_SPEED_MPS = 18000.0
-    MAX_PR_DELTA = 10000.0        # metres
+    MAX_PR_DELTA = 10000.0       # metres
     MAX_PRR_MAG = 30000.0        # m/s
     MAX_PRR_DELTA = 800.0        # m/s change per epoch
 
@@ -272,7 +272,7 @@ def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch
     # Cn0 model
     cn0 = sat_row['Cn0DbHz']
     el = sat_row['sin_elevation']
-    cn0_over_sine = cn0 / np.maximum(el, 0.1)  # Avoid division by zero
+    cn0_over_sine = cn0 / np.maximum(el, 0.1) # Avoid division by zero
     df.loc[sat_id, 'cn0_over_sine'] = cn0_over_sine
 
     # Generic state mapping
@@ -300,7 +300,7 @@ def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch
 
     cn0_diff = np.diff(epoch_window['cn0'], prepend=0)
     cn0_std = np.std(cn0_diff)
-    cn0_stability = 1 / max(cn0_std, 1e-3)  # avoid div by zero
+    cn0_stability = 1 / max(cn0_std, 1e-3) # avoid div by zero
     df.loc[sat_id, 'cn0_stability'] = cn0_stability
 
     pr_std = np.std(epoch_window['pr'])
@@ -328,24 +328,24 @@ def compute_prr_baseline_weight(sat_samples: dict, row: pd.Series) -> float:
     sat_samples[sat_key].append(res)
     
     # Use last N samples for batch variance (or all if fewer than N)
-    samples = sat_samples[sat_key][-50:]  # e.g., last 50 residuals
+    samples = sat_samples[sat_key][-50:] # e.g., last 50 residuals
     N = len(samples)
     
     if N > 1:
-        s2 = np.var(samples, ddof=1)  # unbiased sample variance
+        s2 = np.var(samples, ddof=1) # unbiased sample variance
     else:
-        s2 = 1e-3  # default small value for new satellite
+        s2 = 1e-3 # default small value for new satellite
     
     # Compute mean geometry and mean noise scale for the batch
     sin2a = 1/row['sin_elevation']**2
     c = 10**(-b/10)
     
     # Estimate k using batch residual formula
-    k_hat = max(s2 - sin2a * c, 1e-6)  # clamp to positive
+    k_hat = max(s2 - sin2a * c, 1e-6) # clamp to positive
     
     # Compute sigma^2 for weight
     sigma2 = sin2a + k_hat * c
-    return 1.0 / sigma2  # weight = 1 / sigma^2
+    return 1.0 / sigma2
 
 def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: dict) -> None:
     # elevation rank for all satellites in this epoch
@@ -391,7 +391,7 @@ def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: d
     
 
 def create_dataset_stats(base_path: str):
-    stats = {}  # column -> {count, mean, M2}
+    stats = {} # column -> {count, mean, M2}
     samples = defaultdict(list)
 
     def update_welford(col_name, col_values):
@@ -413,9 +413,6 @@ def create_dataset_stats(base_path: str):
             st['mean'] += delta / st['count']
             delta2 = val - st['mean']
             st['M2'] += delta * delta2
-
-
-    # data_iter = Data_file_iterator(base_path, split='train')
     
     drive_iter = Drive_iterator(
         drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
@@ -423,16 +420,15 @@ def create_dataset_stats(base_path: str):
 
     for drive in drive_iter:
         df, _ = drive.get_dataframes()
-        # --- update stats ---
+        # update stats
         for col in df.select_dtypes(include=['number']).columns:
             update_welford(col, df[col].to_numpy())
 
-        # --- collect samples for fitting ---
+        # collect samples for fitting
         if {'ConstellationType', 'SvElevationDegrees', 'Cn0DbHz'}.issubset(df.columns):
             mask = (~df['SvElevationDegrees'].isna()) & (~df['Cn0DbHz'].isna())
             sub = df.loc[mask, ['ConstellationType', 'SvElevationDegrees', 'Cn0DbHz']]
 
-            # no iterrows – fully vectorised
             for constell, sat_df in sub.groupby('ConstellationType'):
                 elevs = sat_df['SvElevationDegrees'].to_numpy(dtype=float)
                 cn0s = sat_df['Cn0DbHz'].to_numpy(dtype=float)
@@ -698,7 +694,7 @@ if __name__ == "__main__":
             epoch_ids.append(i)
 
         residuals_array = np.array([np.linalg.norm(r) for r in residuals])
-        used_mask = np.zeros_like(residuals_array, dtype=bool)  # Track epochs already in windows
+        used_mask = np.zeros_like(residuals_array, dtype=bool) # Track epochs already in windows
 
         for part_idx in range(1, n_parts + 1):
             # Mask already used epochs
@@ -706,7 +702,7 @@ if __name__ == "__main__":
             if masked_residuals.size <= 0:
                 break
             if masked_residuals.max() < 0:
-                break  # No remaining residuals
+                break # No remaining residuals
 
             idx_max = masked_residuals.argmax()
 

@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import numpy as np
 import torch
+from argparse import ArgumentParser
 from internals.drive_data import Drive
 from internals.evaluate import setup, run
 from internals.common import compute_residual_matrix
@@ -17,15 +18,43 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
     return feats, pr_res_matrix, prr_res_matrix
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2023/sdc2023/train"
-    # drive = Drive(os.path.join(base_path, "2023-05-09-21-32-us-ca-mtv-pe1", "pixel7pro"), preprocessed=True)
-    # drive = Drive(os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8"))  # massive los and multipath
+    parser = ArgumentParser()
+    parser.add_argument(
+        "-b", "--base_path",
+        type=str, 
+        default="./smartphone-decimeter-2023/sdc2023/train",
+        help="Base path to training data. (default: %(default)s)"
+        )
+    parser.add_argument(
+        "-m", "--model_path", 
+        type=str, 
+        default="./single_epoch_network.pt",
+        help="Path to the trained model. (default: %(default)s)"
+        )
+    parser.add_argument(
+        "-d", "--drive",
+        type=str,
+        help="Specific drive to evaluate. Must be a directory within the base path. (e.g. '2020-06-25-00-34-us-ca-mtv-sb-101/pixel4xl') " \
+        "Output map file will be saved in the current directory with name <drive_name>_trajectory_map_single_epoch.html, where <drive_name> is"\
+        " the first part of the drive directory name (e.g. '2020-06-25-00-34-us-ca-mtv-sb-101')"
+        )
+    args = parser.parse_args()
+    base_path = args.base_path
+    if not args.drive: 
+        raise ValueError("Must specify a drive to evaluate using the -d/--drive argument. Drive must be a directory within the base path.")
+    
+    drive = Drive(os.path.join(base_path, args.drive))
+    # drive = Drive(os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8")) # massive los and multipath
     # drive = Drive(os.path.join(base_path, "2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"))
     # drive = Drive(os.path.join(base_path, "2023-09-06-00-01-us-ca-routen", "pixel4xl"))
-    drive = Drive(os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"))
+    # drive = Drive(os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro")) # test candidate (makes it look good)
+    # drive = Drive(os.path.join(base_path, "2021-12-08-20-28-us-ca-lax-c", "sm-g988b")) # test candidate (makes it look good)
+    # drive = Drive(os.path.join(base_path, "2021-12-08-18-52-us-ca-lax-b", "pixel6pro"))
+    # drive = Drive(os.path.join(base_path, "2023-05-24-20-26-us-ca-sjc-ge2", "pixel7pro")) # train candidate
+    # drive = Drive(os.path.join(base_path, "2023-05-19-20-10-us-ca-mtv-ie2", "sm-s908b")) # weirdly bad
 
     print(f"Evaluating file: {drive.get_directory_name()}")
-    setup(Gnss_single_epoch_net, "single_epoch_network.pt", kf=False)
+    setup(Gnss_single_epoch_net, args.model_path, kf=False)
     df, truth_df = drive.get_dataframes()
     save_name = os.path.basename(os.path.dirname(drive.get_directory_name())) + "_trajectory_map_single_epoch.html"
     run(df, truth_df, get_feats, save_name)

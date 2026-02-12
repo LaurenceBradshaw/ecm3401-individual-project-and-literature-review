@@ -3,8 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import folium
-from folium.plugins import TimestampedGeoJson
-from internals.coord_systems import ecef_to_lla, lla_to_ecef, errors_haversine
+from internals.coord_systems import ecef_to_lla, errors_haversine
 from internals.gnss_positioning import Kalman_filter
 from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.gnss_positioning as gp

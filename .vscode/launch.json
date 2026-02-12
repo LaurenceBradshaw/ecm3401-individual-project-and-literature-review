@@ -1,0 +1,61 @@
+{
+    "version": "1.0.0",
+    "configurations": [
+        {
+            "name": "Train Single Epoch Network",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_single_epoch.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-b", "./smartphone-decimeter-2023/sdc2023/train",
+                "-o", "./single_epoch_network.pt"
+            ]
+        },
+        { 
+            "name": "Train Multi Epoch Network", 
+            "type": "debugpy", 
+            "request": "launch", 
+            "program": "${workspaceFolder}/train_multi_epoch.py", 
+            "console": "integratedTerminal", 
+            "args": [ 
+                "-b", "./smartphone-decimeter-2023/sdc2023/train",
+                "-o", "./multi_epoch_network.pt"
+            ] 
+        },
+        { 
+            "name": "Evaluate Single Epoch Network", 
+            "type": "debugpy", 
+            "request": "launch", 
+            "program": "${workspaceFolder}/evaluate_single_epoch.py", 
+            "console": "integratedTerminal", 
+            "args": [ 
+                "-b", "./smartphone-decimeter-2023/sdc2023/train",
+                "-m", "./single_epoch_network.pt",
+                "-d", "2020-06-25-00-34-us-ca-mtv-sb-101/pixel4xl"
+            ] 
+        },
+        { 
+            "name": "Evaluate Multi Epoch Network", 
+            "type": "debugpy", 
+            "request": "launch", 
+            "program": "${workspaceFolder}/evaluate_multi_epoch.py", 
+            "console": "integratedTerminal", 
+            "args": [ 
+                "-b", "./smartphone-decimeter-2023/sdc2023/train",
+                "-m", "./multi_epoch_network.pt",
+                "-d", "2020-06-25-00-34-us-ca-mtv-sb-101/pixel4xl"
+            ] 
+        },
+        {
+            "name": "Preprocess",
+            "type": "debugpy", 
+            "request": "launch", 
+            "program": "${workspaceFolder}/preprocess.py", 
+            "console": "integratedTerminal", 
+            "args": [ 
+                "-b", "./smartphone-decimeter-2023/sdc2023/train"
+            ]
+        }
+    ],
+}

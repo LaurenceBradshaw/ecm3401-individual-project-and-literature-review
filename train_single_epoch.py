@@ -2,8 +2,9 @@ import pandas as pd
 import os
 import numpy as np
 import torch
+from argparse import ArgumentParser
 from internals.drive_data import Drive_iterator
-from internals.train import setup, run
+from internals.train import TRAINING_DRIVES, setup, run
 from internals.common import compute_residual_matrix
 from model import Gnss_single_epoch_net
 
@@ -16,15 +17,24 @@ def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple
     return feats, pr_res_matrix, prr_res_matrix
 
 if __name__ == "__main__":
-    base_path = "./smartphone-decimeter-2023/sdc2023/train"
+    parser = ArgumentParser() 
+    parser.add_argument(
+        "-b", "--base_path", 
+        type=str, 
+        default="./smartphone-decimeter-2023/sdc2023/train", 
+        help="Base path to training data. (default: %(default)s)"
+        ) 
+    parser.add_argument(
+        "-o", "--output_path", 
+        type=str, 
+        default="./single_epoch_network.pt", 
+        help="Path to save the trained model. (default: %(default)s)"
+        ) 
+    args = parser.parse_args()
+
+    base_path = args.base_path
     drive_iter = Drive_iterator(
-        # TODO: hand select these
-        drive_paths=[os.path.join(base_path, "2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"), 
-                     os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8"),
-                     os.path.join(base_path, "2023-09-06-00-01-us-ca-routen", "pixel4xl"),
-                     os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"),
-                     os.path.join(base_path, "2023-05-24-20-26-us-ca-sjc-ge2", "pixel7pro")
-                     ],
+        drive_paths=[os.path.join(base_path, p) for p in TRAINING_DRIVES],
         mode="train"
     )
 
@@ -33,4 +43,4 @@ if __name__ == "__main__":
     for i, drive in enumerate(drive_iter):
         print(f"Processing file: {drive.get_directory_name()}")
         df, truth_df = drive.get_dataframes()
-        run(df, truth_df, get_feats, "single_epoch_network.pt")
+        run(df, truth_df, get_feats, args.output_path)

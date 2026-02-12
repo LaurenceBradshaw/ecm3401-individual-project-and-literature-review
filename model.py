@@ -59,9 +59,9 @@ class Multi_sat_encoder(nn.Module):
 
     def forward(self, sats: torch.Tensor) -> torch.Tensor:
         # sats: (num_sats, feat_dim)
-        seq = sats.unsqueeze(1)  # (num_sats, 1, feat_dim)
+        seq = sats.unsqueeze(1) # (num_sats, 1, feat_dim)
         lstm_out, _ = self.lstm_(seq)
-        return lstm_out.squeeze(1)  # (num_sats, lstm_hidden)
+        return lstm_out.squeeze(1) # (num_sats, lstm_hidden)
     
 class Temporal_sat_encoder(nn.Module):
     """
@@ -101,9 +101,9 @@ class Temporal_sat_encoder(nn.Module):
         _, (h_n, _) = self.lstm_(packed)
 
         # final hidden state from last layer
-        last_hidden = h_n[-1]  # (num_sats, lstm_hidden)
+        last_hidden = h_n[-1] # (num_sats, lstm_hidden)
 
-        return self.proj_(last_hidden)  # (num_sats, emb_dim)
+        return self.proj_(last_hidden) # (num_sats, emb_dim)
     
 
 class Pairwise_attention_encoder(nn.Module):
@@ -127,16 +127,16 @@ class Pairwise_attention_encoder(nn.Module):
         n_sats = residuals.size(0)
         mask = self._create_diag_mask(n_sats).to(residuals.device)
 
-        x = self.embed(residuals.unsqueeze(-1))  # (N, N, D)
+        x = self.embed(residuals.unsqueeze(-1)) # (N, N, D)
 
-        attn_mask = mask                         # True = ignore
+        attn_mask = mask # True = ignore
         x, _ = self.attn(x, x, x, attn_mask=attn_mask)
 
         # Aggregate per satellite (rows)
-        satellite_features = x.mean(dim=1)       # (N, D)
+        satellite_features = x.mean(dim=1) # (N, D)
 
         # One output per satellite
-        return self.out(satellite_features)      # (N, output_dim)
+        return self.out(satellite_features) # (N, output_dim)
 
 
 class Gnss_single_epoch_net(nn.Module):
@@ -264,7 +264,7 @@ class Gnss_single_epoch_net(nn.Module):
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.LeakyReLU(inplace=True),
             nn.LayerNorm(joint_hidden // 2),
-            nn.Linear(joint_hidden // 2, 1)  # final sigmoid applied in forward
+            nn.Linear(joint_hidden // 2, 1) # final sigmoid applied in forward
         )
 
         # Error head MLP
@@ -275,7 +275,7 @@ class Gnss_single_epoch_net(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.ReLU(inplace=True),
-            nn.Linear(joint_hidden // 2, 1)  # raw prediction, no activation
+            nn.Linear(joint_hidden // 2, 1) # raw prediction, no activation
         )
 
         # Weight head MLP
@@ -285,7 +285,7 @@ class Gnss_single_epoch_net(nn.Module):
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.LeakyReLU(inplace=True),
             nn.LayerNorm(joint_hidden // 2),
-            nn.Linear(joint_hidden // 2, 1)  # final sigmoid applied in forward
+            nn.Linear(joint_hidden // 2, 1) # final sigmoid applied in forward
         )
 
         # Error head MLP
@@ -296,7 +296,7 @@ class Gnss_single_epoch_net(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.ReLU(inplace=True),
-            nn.Linear(joint_hidden // 2, 1)  # raw prediction, no activation
+            nn.Linear(joint_hidden // 2, 1) # raw prediction, no activation
         )
 
     def forward(self, sats: torch.Tensor, pr_residual_matrix: torch.Tensor, prr_residual_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

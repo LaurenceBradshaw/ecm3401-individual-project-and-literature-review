@@ -1,13 +1,20 @@
 import pandas as pd
 import os
-import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.nn.utils.rnn import pad_sequence
-from internals.coord_systems import ecef_to_enu_rot, ecef_to_lla_torch, lla_to_ecef_torch
 from internals import gnss_positioning as gp
 from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.common as common
+
+TRAINING_DRIVES = [
+    os.path.join("2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"), 
+    os.path.join("2022-02-24-18-29-us-ca-lax-o", "mi8"),
+    os.path.join("2023-09-06-00-01-us-ca-routen", "pixel4xl"),
+    os.path.join("2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"),
+    os.path.join("2023-05-24-20-26-us-ca-sjc-ge2", "pixel7pro"),
+    os.path.join("2021-03-10-23-13-us-ca-mtv-h", "mi8"),
+    os.path.join("2021-07-27-19-49-us-ca-mtv-b", "mi8"),
+    os.path.join("2021-08-04-20-40-us-ca-sjc-c", "sm-g988b"),
+]
 
 def setup(base_path: str, network_cls: torch.nn.Module) -> None:
     global net, optimizer, features, scheduler
@@ -73,11 +80,11 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float64, device=common.get_device())
 
         # clock_bias_truth, clock_drift_truth = gp.estimate_rx_clock_bias_and_drift_torch(pr, prr, sat_pos, sat_vel, pos_truth, vel_truth)
-        pos_truth_vec = torch.concat([pos_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())]) # pad clock bias to truth for loss computation
+        pos_truth_vec = torch.concat([pos_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
         clock_bias_truth = gp.estimate_clock_bias_via_pseudoinverse(pos_truth_vec, sat_pos, pr)
         pos_truth = torch.concat([pos_truth, clock_bias_truth.unsqueeze(0)])
 
-        vel_truth_vec = torch.concat([vel_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())]) # pad clock drift to truth for loss computation
+        vel_truth_vec = torch.concat([vel_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
         clock_drift_truth = gp.estimate_clock_drift_via_pseudoinverse(pos_truth, vel_truth_vec, sat_pos, sat_vel, prr)
         vel_truth = torch.concat([vel_truth, clock_drift_truth.unsqueeze(0)])
 
