@@ -65,8 +65,8 @@ def jacobian_residuals(x: np.ndarray, xsat: np.ndarray) -> np.ndarray:
 
     J = np.empty((n, 4), dtype=np.float64)
     for i in range(n):
-        J[i, 0] = -u[i, 0]
-        J[i, 1] = -u[i, 1]
+        J[i, 0] = -u[i, 0] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[i, 1]
+        J[i, 1] = -u[i, 1] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[i, 0]
         J[i, 2] = -u[i, 2]
         J[i, 3] = 1.0
 
@@ -213,12 +213,14 @@ def los_vector_torch(xusr: torch.Tensor, xsat: torch.Tensor) -> tuple[torch.Tens
 def jacobian_residuals_torch(x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
     u, _ = los_vector_torch(x[:3], xsat)
     J = torch.zeros((xsat.shape[0], 4), dtype=x.dtype, device=x.device)
-    J[:, :3] = -u
+    J[:, 0] = -u[:, 0] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 1]
+    J[:, 1] = -u[:, 1] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 0]
+    J[:, 2] = -u[:, 2]
     J[:, 3] = 1.0
     return J
 
 def pr_residuals_torch(x: torch.Tensor, xsat: torch.Tensor, pr: torch.Tensor) -> torch.Tensor:
-    u, rng = los_vector_torch(x[:3], xsat)
+    _, rng = los_vector_torch(x[:3], xsat)
     rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (xsat[:, 0] * x[1] - xsat[:, 1] * x[0])
     residuals = rng - (pr - x[3])
     return residuals
@@ -310,6 +312,43 @@ def calculate_dop(position: np.ndarray | torch.Tensor, H: np.ndarray | torch.Ten
     }
 
     return dop
+
+def calculate_dop_torch(
+    position: torch.Tensor, 
+    H: torch.Tensor, 
+    W: torch.Tensor
+) -> dict:
+    """Torch-only version"""
+    n_sats = H.shape[0]
+    if n_sats < 4:
+        print("Warning: Not enough satellites for DOP calculation")
+        return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
+
+    cov_matrix = torch.linalg.inv(H.T @ W @ H)
+    
+    sigma_x2, sigma_y2, sigma_z2, sigma_t2 = (
+        cov_matrix[0, 0], cov_matrix[1, 1], 
+        cov_matrix[2, 2], cov_matrix[3, 3]
+    )
+
+    pdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2)
+    tdop = torch.sqrt(sigma_t2)
+    gdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2 + sigma_t2)
+
+    ecef_to_enu = torch.tensor(coords.ecef_to_enu_rot(position.detach().numpy()), dtype=torch.float64)
+    pos_cov = cov_matrix[0:3, 0:3]
+    enu_cov = ecef_to_enu @ pos_cov @ ecef_to_enu.T
+
+    hdop = torch.sqrt(enu_cov[0, 0] + enu_cov[1, 1])
+    vdop = torch.sqrt(enu_cov[2, 2])
+
+    return {
+        'pdop': pdop.item(),
+        'tdop': tdop.item(),
+        'gdop': gdop.item(),
+        'hdop': hdop.item(),
+        'vdop': vdop.item()
+    }
 
 def position(
     pr: np.ndarray,
@@ -471,6 +510,13 @@ def position_torch(
     if torch.isnan(pos_output).any():
         print("Warning: Least squares returned NaN for position. Returning previous estimate")
         return prev_estimate
+    
+    
+    # Compute DOP
+    H_pos = jacobian_residuals_torch(pos_output, sat_pos)
+    dop = calculate_dop_torch(pos_output[:3], H_pos, Wx)
+    if dop["pdop"] > 10.0:
+        print(f"Warning: poor quality solution: PDOP {dop['pdop']:.1f}")
 
     # Initial guess for velocity
     v0 = torch.zeros(4, dtype=pr.dtype, device=pr.device)
@@ -495,7 +541,7 @@ def position_torch(
         "clock_bias": pos_output[3],
         "velocity": vel_output[:3],
         "clock_drift": vel_output[3],
-        "dop": {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9},
+        "dop": dop,
     }
 
     return new_pos
@@ -600,20 +646,26 @@ class Kalman_filter:
         self,
         dt=1.0,
         # Process noise
-        sigma_acc = 0.5,      # m/s2 - acceleration noise (car can accelerate ~0-5 m/s2)
-        sigma_b = 10.0,       # m - clock bias process noise (~10m equivalent)
-        sigma_d = 0.1,        # m/s - clock drift process noise
+        sigma_acc = 2.0,      # m/s2 - acceleration noise
+        sigma_b = 30.0,       # m - clock bias process noise
+        sigma_d = 0.5,        # m/s - clock drift process noise
         # Measurement noise (depends on the measurement source quality)
-        sigma_p = 5.0,        # m - position measurement noise (typical GNSS solution)
-        sigma_v = 0.1,        # m/s - velocity measurement noise
+        sigma_p = 10.0,        # m - position measurement noise
+        sigma_v = 0.5,        # m/s - velocity measurement noise
         # Initial uncertainty
-        sigma_p0 = 10.0,      # m - initial position uncertainty
-        sigma_v0 = 5.0,       # m/s - initial velocity uncertainty  
-        sigma_b0 = 100.0,     # m - initial clock bias uncertainty (~100m equivalent)
-        sigma_d0 = 1.0,       # m/s - initial clock drift uncertainty
+        sigma_p0 = 50.0,      # m - initial position uncertainty
+        sigma_v0 = 10.0,       # m/s - initial velocity uncertainty  
+        sigma_b0 = 200.0,     # m - initial clock bias uncertainty (~100m equivalent)
+        sigma_d0 = 2.0,       # m/s - initial clock drift uncertainty
+        # Adaptive parameters
+        min_speed_threshold = 0.5,  # m/s - detect stationary
+        max_speed = 50.0,           # m/s (~180 km/h) - upper limit for cars
     ):
         self.initialised_ = False
         self.dt_ = dt
+        self.min_speed_threshold_ = min_speed_threshold
+        self.max_speed_ = max_speed
+        self.stationary_count_ = 0
 
         I3 = np.eye(3)
 
@@ -669,16 +721,51 @@ class Kalman_filter:
         self.x_[7, 0] = clock_drift
         self.initialised_ = True
 
-    def predict(self):
+    def predict(self, current_speed=None):
         if not self.initialised_:
             return
 
-        self.x_ = self.F_.dot(self.x_)
-        self.P_ = self.F_.dot(self.P_).dot(self.F_.T) + self.Q_
+        # Adapt process noise based on speed
+        Q = self.Q_.copy()
+        
+        if current_speed is not None:
+            if current_speed < self.min_speed_threshold_:
+                # Stationary: reduce position noise significantly
+                self.stationary_count_ += 1
+                if self.stationary_count_ > 3:  # ~3 seconds stopped
+                    Q[0:6, 0:6] *= 0.1  # Much lower noise when stopped
+            else:
+                self.stationary_count_ = 0
+                # Higher speeds = more uncertainty
+                speed_factor = min(current_speed / 20.0, 2.0)  # Cap at 2x
+                Q[0:6, 0:6] *= speed_factor
 
-    def update(self, pos, vel, clock_bias, clock_drift):
+        self.x_ = self.F_.dot(self.x_)
+        self.P_ = self.F_.dot(self.P_).dot(self.F_.T) + Q
+
+    def update(self, pos, vel, clock_bias, clock_drift, 
+               hdop=None, satellite_count=None, speed=None):
         if not self.initialised_:
             self.initialise(pos, vel, clock_bias, clock_drift)
+            return
+
+        # Quality gating for phone GNSS
+        R = self.R_.copy()
+        
+        if hdop is not None:
+            # HDOP (horizontal dilution of precision) - lower is better
+            # Inflate measurement noise based on HDOP
+            hdop_factor = max(hdop / 2.0, 1.0)  # Baseline HDOP=2
+            R[0:3, 0:3] *= hdop_factor
+        
+        if satellite_count is not None and satellite_count < 6:
+            # Poor satellite visibility - increase position uncertainty
+            R[0:3, 0:3] *= 2.0
+        
+        # Velocity constraint for cars
+        if speed is not None and speed > self.max_speed_:
+            # Reject unrealistic velocities (common with phone GNSS)
+            return
 
         z = np.zeros((8, 1))
         z[0:3, 0] = pos
@@ -688,7 +775,7 @@ class Kalman_filter:
 
         y = z - self.H_.dot(self.x_)
 
-        S = self.H_.dot(self.P_).dot(self.H_.T) + self.R_
+        S = self.H_.dot(self.P_).dot(self.H_.T) + R
         K = self.P_.dot(self.H_.T).dot(np.linalg.inv(S))
 
         self.x_ = self.x_ + K.dot(y)

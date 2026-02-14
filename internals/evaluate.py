@@ -111,15 +111,32 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_name
         curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
 
         if kf_enabled:
-            kf.predict()
-            kf.update(curr_pos["position"].cpu().numpy(), curr_pos["velocity"].cpu().numpy(), curr_pos["clock_bias"].cpu().numpy(), curr_pos["clock_drift"].cpu().numpy())
+            model_speed = torch.linalg.norm(curr_pos["velocity"]).item()
+            kf.predict(model_speed)
+            kf.update(
+                curr_pos["position"].cpu().numpy(), 
+                curr_pos["velocity"].cpu().numpy(), 
+                curr_pos["clock_bias"].cpu().numpy(), 
+                curr_pos["clock_drift"].cpu().numpy(),
+                curr_pos['dop']['hdop'],
+                pr.shape[0],
+                model_speed
+                )
             curr_pos["position"] = torch.tensor(kf.get_position(), dtype=torch.float64)
             curr_pos["velocity"] = torch.tensor(kf.get_velocity(), dtype=torch.float64)
             curr_pos["clock_bias"] = torch.tensor(kf.get_clock_bias(), dtype=torch.float64)
             curr_pos["clock_drift"] = torch.tensor(kf.get_clock_drift(), dtype=torch.float64)
 
-            kf_baseline.predict()
-            kf_baseline.update(baseline_pos["position"].cpu().numpy(), baseline_pos["velocity"].cpu().numpy(), baseline_pos["clock_bias"].cpu().numpy(), baseline_pos["clock_drift"].cpu().numpy())
+            baseline_speed = torch.linalg.norm(baseline_pos["velocity"]).item()
+            kf_baseline.predict(baseline_speed)
+            kf_baseline.update(baseline_pos["position"].cpu().numpy(), 
+                               baseline_pos["velocity"].cpu().numpy(), 
+                               baseline_pos["clock_bias"].cpu().numpy(), 
+                               baseline_pos["clock_drift"].cpu().numpy(),
+                               baseline_pos['dop']['hdop'],
+                               pr.shape[0],
+                               baseline_speed
+                               )
             baseline_pos["position"] = torch.tensor(kf_baseline.get_position(), dtype=torch.float64)
             baseline_pos["velocity"] = torch.tensor(kf_baseline.get_velocity(), dtype=torch.float64)
             baseline_pos["clock_bias"] = torch.tensor(kf_baseline.get_clock_bias(), dtype=torch.float64)

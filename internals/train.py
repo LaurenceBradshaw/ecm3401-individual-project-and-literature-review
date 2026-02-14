@@ -53,9 +53,6 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
 
         pr_weights, pr_error, prr_weights = net(*feats)
 
-        # assert all weights are not 1
-        assert not torch.all(pr_weights == 1.0), "All predicted pseudorange weights are 1.0"
-
         # TODO: do this before outputting from the network.
         Wx = torch.diag_embed(pr_weights.squeeze(1))
         pr_error = pr_error.T.squeeze(0)
@@ -107,7 +104,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         vel_gain = prr_baseline_loss.detach().item() - prr_loss.detach().item()
         pos_pad = ' ' if pos_gain >= 0 else ''
         vel_pad = ' ' if vel_gain >= 0 else ''
-        epoch_pad = ' '*(len(str(N)) - len(str(epoch_id + 1)))
+        epoch_pad = ' '*(len(str(N)) - len(str(epoch_num)))
         print(
             f"Epoch {epoch_pad}{epoch_num} / {N} | "
             f"Pos err: {pr_loss.item():.3e} m (baseline {pr_baseline_loss.item():.3e}, Δ{pos_pad}{pos_gain:.3e}) | "

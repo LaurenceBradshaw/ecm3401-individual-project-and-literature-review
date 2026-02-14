@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 torch.set_default_dtype(torch.float64)
+torch.manual_seed(42) # The meaning of life, the universe, and everything GNSS
 
 class Normalise(nn.Module):
     def __init__(self):
@@ -214,7 +215,7 @@ class Gnss_single_epoch_net(nn.Module):
         lstm_layers: int = 1,
         pairwise_attn_hidden: int = 128,
         pairwise_attn_output: int = 128,
-        joint_hidden: int = 512,
+        joint_hidden: int = 256,
         dropout: float = 0.1,
         need_standardising: torch.Tensor = None,
         require_standardisation: bool = True,
@@ -322,17 +323,21 @@ class Gnss_single_epoch_net(nn.Module):
         joint_feat = self.joint_mlp_(joint)
 
         pr_weight_logits = self.pr_weight_head_(joint_feat)
-        pr_mean = pr_weight_logits.mean(dim=0, keepdim=True)
-        pr_std = pr_weight_logits.std(dim=0, keepdim=True) + 1e-6
-        pr_weight_logits = (pr_weight_logits - pr_mean) / pr_std
-        pr_weights = torch.sigmoid(pr_weight_logits)
+        # pr_mean = pr_weight_logits.mean(dim=0, keepdim=True)
+        # pr_std = pr_weight_logits.std(dim=0, keepdim=True) + 1e-6
+        # pr_weight_logits = (pr_weight_logits - pr_mean) / pr_std
+        # pr_weights = torch.sigmoid(pr_weight_logits)
+        pr_sigma = F.softplus(pr_weight_logits) + 1e-3
+        pr_weights = 1.0 / (pr_sigma * pr_sigma)
         pr_errors = self.pr_error_head_(joint_feat)
 
         prr_weight_logits = self.prr_weight_head_(joint_feat)
-        prr_mean = prr_weight_logits.mean(dim=0, keepdim=True)
-        prr_std = prr_weight_logits.std(dim=0, keepdim=True) + 1e-6
-        prr_weight_logits = (prr_weight_logits - prr_mean) / prr_std
-        prr_weights = torch.sigmoid(prr_weight_logits)
+        # prr_mean = prr_weight_logits.mean(dim=0, keepdim=True)
+        # prr_std = prr_weight_logits.std(dim=0, keepdim=True) + 1e-6
+        # prr_weight_logits = (prr_weight_logits - prr_mean) / prr_std
+        # prr_weights = torch.sigmoid(prr_weight_logits)
+        prr_sigma = F.softplus(prr_weight_logits) + 1e-3
+        prr_weights = 1.0 / (prr_sigma * prr_sigma)
         # prr_errors = self.prr_error_head_(joint_feat)
 
         # return pr_weights, pr_errors, prr_weights, prr_errors
@@ -341,6 +346,10 @@ class Gnss_single_epoch_net(nn.Module):
         # pr_weights = torch.diag_embed(pr_weights.squeeze(1))
         # pr_errors = pr_errors.T.squeeze(0)
         # prr_weights = torch.diag_embed(prr_weights.squeeze(1))
+
+        # assert all weights are not equal
+        assert not torch.allclose(pr_weights, pr_weights[0]), "All PR weights are the same, model is not learning"
+        assert not torch.allclose(prr_weights, prr_weights[0]), "All PRR weights are the same, model is not learning"
 
         return pr_weights, pr_errors, prr_weights
     

@@ -7,7 +7,8 @@ import internals.gnss_positioning as gp
 
 device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def get_device() -> torch.device:
-    return device_
+    # return device_
+    return "cpu" # Tried to use GPU, but only my laptop has an nvidia gpu and its slower than my main desktop cpu.
 
 def get_ground_truth(truth_df: pd.DataFrame, epoch_df: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
     # Find closest ground truth row by time

@@ -33,6 +33,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     base_path = args.base_path
+    ALL_DRIVES = [os.path.join(d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))]
     drive_iter = Drive_iterator(
         drive_paths=[os.path.join(base_path, p) for p in TRAINING_DRIVES],
         mode="train"
