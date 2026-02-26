@@ -99,7 +99,7 @@ if __name__ == "__main__":
     print(f"Evaluating file: {drive.get_directory_name()}")
     setup(Gnss_multi_epoch_net, args.model_path, kf=args.kf)
     df, truth_df = drive.get_dataframes()
-    save_name = os.path.basename(os.path.dirname(drive.get_directory_name())) + "_trajectory_map_multi_epoch.html"
+    save_name = os.path.basename(drive.get_directory_name()) + "_trajectory_map_multi_epoch.html"
     epoch_manager = Epoch_manager(10)
     run(df, truth_df, get_feats, save_name)
 

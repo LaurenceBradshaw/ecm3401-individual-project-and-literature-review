@@ -63,7 +63,7 @@ if __name__ == "__main__":
     print(f"Evaluating file: {drive.get_directory_name()}")
     setup(Gnss_single_epoch_net, args.model_path, kf=args.kf)
     df, truth_df = drive.get_dataframes()
-    save_name = os.path.basename(os.path.dirname(drive.get_directory_name())) + "_trajectory_map_single_epoch.html"
+    save_name = os.path.basename(drive.get_directory_name()) + "_trajectory_map_single_epoch.html"
     run(df, truth_df, get_feats, save_name)
 
 #     # data_iter = Data_file_iterator(base_path, split='train', prefix='2022-02-24-18-29-us-ca-lax-o')
