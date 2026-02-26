@@ -196,6 +196,93 @@ def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, 
 
     return v
 
+def estimate_clock_bias(
+    x_true: np.ndarray,
+    xsat: np.ndarray,
+    pr: np.ndarray
+) -> np.ndarray:
+    m = pr.shape[0]
+    W = np.eye(m, dtype=pr.dtype)
+
+    # Ensure we only use true position
+    x_pos = x_true[:3]
+
+    # Line-of-sight and geometric range
+    u, rng = los_vector(x_pos, xsat)
+
+    # Apply Earth rotation (Sagnac)
+    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+        xsat[:, 0] * x_pos[1] - xsat[:, 1] * x_pos[0]
+    )
+
+    # Pseudorange error (measured - true geometry)
+    delta_rho = pr - rng
+
+    H = jacobian_residuals(x_true, xsat)
+
+    H_w = W @ H
+    HTH = H_w.T @ H_w
+
+    # Weighted pseudoinverse
+    H_pinv = np.linalg.solve(HTH, H_w.T @ W)  # (4, m)
+
+    # Final row corresponds to clock
+    p_delta_t = H_pinv[3]  # (m,)
+
+    delta_clock_m = p_delta_t @ delta_rho
+
+    return delta_clock_m
+
+def estimate_clock_drift(
+    x_true: np.ndarray,
+    v_true: np.ndarray,
+    xsat: np.ndarray,
+    vsat: np.ndarray,
+    prr: np.ndarray,
+) -> np.ndarray:
+    """
+    Estimate clock drift (c * delta_t_dot) in metres per second
+    via weighted pseudoinverse projection using truth geometry.
+    """
+
+    m = prr.shape[0]
+    W = np.eye(m, dtype=prr.dtype)
+
+    # True LOS vectors
+    u, _ = los_vector(x_true[:3], xsat)
+
+    # True geometric range rate
+    rate = np.zeros(m, dtype=prr.dtype)
+
+    for i in range(m):
+        rate[i] = np.dot(vsat[i, :3] - v_true[:3], u[i])
+        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[i, 1] * x_true[0]
+            + xsat[i, 1] * v_true[0]
+            - vsat[i, 0] * x_true[1]
+            - xsat[i, 0] * v_true[1]
+        )
+
+    # Pseudorange rate error (measured - true geometry)
+    delta_rho_dot = prr - rate
+
+    # PRR Jacobian wrt velocity state
+    H = np.zeros((m, 4), dtype=prr.dtype)
+    H[:, :3] = -u
+    H[:, 3] = 1.0
+
+    # Weighted pseudoinverse
+    H_w = W @ H
+    HTH = H_w.T @ H_w
+    H_pinv = np.linalg.solve(HTH, H_w.T @ W)
+
+    # Clock drift row
+    p_delta_t_dot = H_pinv[3]
+
+    delta_clock_drift_mps = p_delta_t_dot @ delta_rho_dot
+
+    return delta_clock_drift_mps
+
 ##########################################################################################
 #
 # The following are PyTorch versions of the above functions for use with pytorch autograd.
@@ -546,7 +633,7 @@ def position_torch(
 
     return new_pos
 
-def estimate_clock_bias_via_pseudoinverse(
+def estimate_clock_bias_torch(
     x_true: torch.Tensor,
     xsat: torch.Tensor,
     pr: torch.Tensor
@@ -581,7 +668,7 @@ def estimate_clock_bias_via_pseudoinverse(
 
     return delta_clock_m
 
-def estimate_clock_drift_via_pseudoinverse(
+def estimate_clock_drift_torch(
     x_true: torch.Tensor,
     v_true: torch.Tensor,
     xsat: torch.Tensor,

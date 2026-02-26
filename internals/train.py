@@ -21,7 +21,7 @@ def setup(base_path: str, network_cls: torch.nn.Module) -> None:
     ###############
     features = network_cls.features
 
-    dataset_stats_file = f"{os.path.dirname(base_path)}/dataset_stats.csv"
+    dataset_stats_file = f"{base_path}/dataset_stats.csv"
     stats_df = pd.read_csv(dataset_stats_file)
 
     mean = torch.tensor([stats_df.loc[stats_df['column_name'] == col, 'mean'].values[0] for col in features
@@ -78,11 +78,11 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
 
         # clock_bias_truth, clock_drift_truth = gp.estimate_rx_clock_bias_and_drift_torch(pr, prr, sat_pos, sat_vel, pos_truth, vel_truth)
         pos_truth_vec = torch.concat([pos_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
-        clock_bias_truth = gp.estimate_clock_bias_via_pseudoinverse(pos_truth_vec, sat_pos, pr)
+        clock_bias_truth = gp.estimate_clock_bias_torch(pos_truth_vec, sat_pos, pr)
         pos_truth = torch.concat([pos_truth, clock_bias_truth.unsqueeze(0)])
 
         vel_truth_vec = torch.concat([vel_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
-        clock_drift_truth = gp.estimate_clock_drift_via_pseudoinverse(pos_truth, vel_truth_vec, sat_pos, sat_vel, prr)
+        clock_drift_truth = gp.estimate_clock_drift_torch(pos_truth, vel_truth_vec, sat_pos, sat_vel, prr)
         vel_truth = torch.concat([vel_truth, clock_drift_truth.unsqueeze(0)])
 
         pr_baseline = torch.concat([baseline_pos['position'], baseline_pos['clock_bias'].unsqueeze(0)])
