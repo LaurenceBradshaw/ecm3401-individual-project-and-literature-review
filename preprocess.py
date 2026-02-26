@@ -1,10 +1,5 @@
 import json
 import os
-import numpy as np
-from internals.drive_data import Drive_iterator, Drive
-from internals import common
-from internals import gnss_positioning as gp
-from internals.constants import SAT_POS_COLS, SAT_VEL_COLS, PR_COL, PRR_COL, SPEED_OF_LIGHT, L1_MAX, L1_MIN, CONSTELLATION_MAP
 from internals.preprocessing.hash_file import hash_store_path
 from internals.preprocessing.per_file import process_file, per_file_hash
 from internals.preprocessing.per_file import HASH_FILE as PER_FILE_HASH_FILE
