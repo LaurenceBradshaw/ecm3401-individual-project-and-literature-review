@@ -1,5 +1,6 @@
 import json
 import os
+from internals.drive_data import Drive_iterator
 from internals.preprocessing.hash_file import hash_store_path
 from internals.preprocessing.per_file import process_file, per_file_hash
 from internals.preprocessing.per_file import HASH_FILE as PER_FILE_HASH_FILE
