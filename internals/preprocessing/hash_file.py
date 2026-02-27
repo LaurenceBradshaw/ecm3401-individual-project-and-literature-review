@@ -12,8 +12,8 @@ def hash_file(file: str) -> str:
 
     return hasher.hexdigest()
 
-def hash_store_path():
-    if not os.path.exists("preprocessing_hashes"):
-        os.makedirs("preprocessing_hashes")
+def preprocessing_artifacts_path():
+    if not os.path.exists("preprocessing_artifacts"):
+        os.makedirs("preprocessing_artifacts")
         
-    return "preprocessing_hashes"
+    return "preprocessing_artifacts"

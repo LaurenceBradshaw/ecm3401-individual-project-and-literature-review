@@ -2,12 +2,11 @@ import pandas as pd
 import numpy as np
 import math
 import os
-import json
 import internals.gnss_positioning as gp
 from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS, SPEED_OF_LIGHT, CONSTELLATION_MAP, L1_MIN, L1_MAX
 from internals.epoch_manager import Epoch_manager
 from internals.drive_data import Drive
-from internals.preprocessing.hash_file import hash_file, hash_store_path
+from internals.preprocessing.hash_file import hash_file
 
 HASH_FILE = "preprocess_per_file_hash_table.json"
 
@@ -374,7 +373,6 @@ def per_file_hash():
 def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) -> None:
     # Hash of this python file
     hash = hash_file(__file__)
-    hash_dir = hash_store_path()
 
     if drive.get_directory_name() in hash_table and hash_table[drive.get_directory_name()] == hash:
         print(f"[{drive_i+1}/{n_drives}] Skipping file (already processed with same code): {drive.get_directory_name()}")

@@ -1,13 +1,14 @@
 import json
 import os
 from internals.drive_data import Drive_iterator
-from internals.preprocessing.hash_file import hash_store_path
+from internals.preprocessing.hash_file import preprocessing_artifacts_path
 from internals.preprocessing.per_file import process_file, per_file_hash
 from internals.preprocessing.per_file import HASH_FILE as PER_FILE_HASH_FILE
 from internals.preprocessing.dataset_stats import create_dataset_stats
 from internals.preprocessing.dataset_stats import HASH_FILE as DATASET_STATS_HASH_FILE
 from internals.preprocessing.focused_subsets import create_focused_subset
 from internals.preprocessing.focused_subsets import HASH_FILE as FOCUSED_SUBSETS_HASH_FILE
+from internals.preprocessing.find_test_set import find_test_set
 
 # This file is wildly inefficient since it loops through the data multiple times.
 # TODO: optimise later.
@@ -15,7 +16,7 @@ from internals.preprocessing.focused_subsets import HASH_FILE as FOCUSED_SUBSETS
 #       Although there are transitive dependencies. i.e., if general processing changes, then subsequent steps need to be redone. this is the only case.
 
 def load_hash_table(file_name: str) -> dict:
-    hash_dir = hash_store_path()
+    hash_dir = preprocessing_artifacts_path()
     if not os.path.exists(os.path.join(hash_dir, file_name)):
         return {}
     else:
@@ -23,15 +24,27 @@ def load_hash_table(file_name: str) -> dict:
             return json.load(f)
         
 def write_hash_table(file_name: str, hash_table: dict) -> None:
-    hash_dir = hash_store_path()
+    hash_dir = preprocessing_artifacts_path()
     with open(os.path.join(hash_dir, file_name), "w") as f:
         json.dump(hash_table, f)
+
+def save_string_list(file_path: str, string_list: list[str]) -> None:
+    with open(file_path, "w", encoding="utf-8") as f:
+        for item in string_list:
+            f.write(item)
+            f.write("\n")
 
 if __name__ == "__main__":
     base_path = "./smartphone-decimeter-2023/sdc2023/train"
     
     drive_iter = Drive_iterator(
-        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        drive_paths=[
+            os.path.join(base_path, d, p)
+            for d in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, d))
+            for p in os.listdir(os.path.join(base_path, d))
+            if os.path.isdir(os.path.join(base_path, d, p))
+        ],
         preprocessed=False
     )
 
@@ -55,7 +68,13 @@ if __name__ == "__main__":
     focused_subset_hash_table = load_hash_table(FOCUSED_SUBSETS_HASH_FILE)
 
     drive_iter = Drive_iterator(
-        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        drive_paths=[
+            os.path.join(base_path, d, p)
+            for d in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, d))
+            for p in os.listdir(os.path.join(base_path, d))
+            if os.path.isdir(os.path.join(base_path, d, p))
+        ],
         preprocessed=True
     )
 
@@ -66,9 +85,21 @@ if __name__ == "__main__":
         drive_i += 1
         write_hash_table(FOCUSED_SUBSETS_HASH_FILE, focused_subset_hash_table)
 
-    # TODO: Order files by residual magnitude, and save a list of file names taken by a random doubling range until the end of the dataset is reached.
-    # Should give a good test-train split.
+    drive_iter = Drive_iterator(
+        drive_paths=[
+            os.path.join(base_path, d, p)
+            for d in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, d))
+            for p in os.listdir(os.path.join(base_path, d))
+            if os.path.isdir(os.path.join(base_path, d, p))
+        ],
+        preprocessed=True
+    )
 
+    test_drives = find_test_set(drive_iter, base_path)
+    print(f"Selected test drives: {test_drives}")
+    hash_dir = preprocessing_artifacts_path() # Put in here and treat as preprocessing artefact.
+    save_string_list(os.path.join(hash_dir, "test_drives.txt"), test_drives)
 
     
 

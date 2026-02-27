@@ -1,11 +1,10 @@
 import numpy as np
 import os
-import json
 import internals.common as common
 import internals.gnss_positioning as gp
 from internals.drive_data import Drive
 from internals.constants import PR_COL, SAT_POS_COLS, PRR_COL, SAT_VEL_COLS
-from internals.preprocessing.hash_file import hash_file, hash_store_path
+from internals.preprocessing.hash_file import hash_file
 
 HASH_FILE = "preprocess_focused_subsets_hash_table.json"
 

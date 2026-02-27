@@ -38,7 +38,13 @@ def create_dataset_stats(base_path: str, output_file: str, hash_table: dict, per
             st['M2'] += delta * delta2
     
     drive_iter = Drive_iterator(
-        drive_paths=[os.path.join(base_path, d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))],
+        drive_paths=[
+            os.path.join(base_path, d, p)
+            for d in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, d))
+            for p in os.listdir(os.path.join(base_path, d))
+            if os.path.isdir(os.path.join(base_path, d, p))
+        ],
     )
 
     for drive in drive_iter:
