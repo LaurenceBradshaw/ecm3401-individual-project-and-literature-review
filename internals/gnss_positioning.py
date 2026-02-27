@@ -177,22 +177,34 @@ def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, 
     v = v0.copy()
 
     for _ in range(max_iters):
-        r = residuals_func(v)          # shape (m,)
-        H = jacobian_func(v)           # shape (m, n)
+        r = residuals_func(v)      # (m,)
+        H = jacobian_func(v)       # (m, n)
 
-        # Apply weighting: r_w = W r, H_w = W H
-        r_w = W @ r                    # weighted residuals
-        H_w = W @ H                    # weighted Jacobian
+        # Apply weighting
+        r_w = W @ r                # weighted residual
+        H_w = W @ H                # weighted Jacobian
 
         # Solve normal equations: (H^T H) delta = -H^T r
-        HTH = H_w.T @ H_w
-        JTr = H_w.T @ r_w
-        delta = -np.linalg.solve(HTH, JTr)
+        HTH = H_w.T @ H_w          # (n, n)
+        HTr = H_w.T @ r_w          # (n,)
+        try:
+            delta = -np.linalg.solve(HTH, HTr)
+        except np.linalg.LinAlgError:
+            # fallback to pseudo-inverse if singular
+            delta = -np.linalg.pinv(HTH) @ HTr
 
-        v += delta
+        v_new = v + delta
 
+        # Check convergence
         if np.linalg.norm(delta) < tol:
+            v = v_new
             break
+
+        # receiver cannot be 100,000 km from Earth, sanity check to prevent divergence
+        if np.linalg.norm(v_new[:3]) > 1e8:
+            break
+
+        v = v_new
 
     return v
 
@@ -300,8 +312,8 @@ def los_vector_torch(xusr: torch.Tensor, xsat: torch.Tensor) -> tuple[torch.Tens
 def jacobian_residuals_torch(x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
     u, _ = los_vector_torch(x[:3], xsat)
     J = torch.zeros((xsat.shape[0], 4), dtype=x.dtype, device=x.device)
-    J[:, 0] = -u[:, 0] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 1]
-    J[:, 1] = -u[:, 1] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 0]
+    J[:, 0] = -u[:, 0] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 1]
+    J[:, 1] = -u[:, 1] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 0]
     J[:, 2] = -u[:, 2]
     J[:, 3] = 1.0
     return J
@@ -317,38 +329,59 @@ def prr_residuals_torch(v: torch.Tensor, vsat: torch.Tensor, prr: torch.Tensor, 
     rate = torch.zeros(xsat.shape[0], dtype=x.dtype, device=x.device)
 
     for i in range(xsat.shape[0]):
-        rate[i] = torch.dot(vsat[i, :3] - v[:3], u[i])
-        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
-            vsat[i, 1] * x[0] + xsat[i, 1] * v[0] - vsat[i, 0] * x[1] - xsat[i, 0] * v[1]
+        rel_vel = vsat[:, :3] - v[:3].unsqueeze(0)          # (m, 3)
+        rate = (rel_vel * u).sum(dim=1)                       # (m,)
+        rate += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[:, 1] * x[0] + xsat[:, 1] * v[0]
+        - vsat[:, 0] * x[1] - xsat[:, 0] * v[1]
         )
 
     residuals = rate - (prr - v[3])
     return residuals
 
-def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torch.Tensor, max_iters: int=50, tol: float=1e-6):
+def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torch.Tensor, huber_delta: float, max_iters: int=50, tol: float=1e-6) -> torch.Tensor:
     v = v0.clone()
 
     for _ in range(max_iters):
         r = residuals_func(v)           # shape (m,)
         H = jacobian_func(v)            # shape (m, n)
 
+        # Compute Huber weights (elementwise, differentiable)
+        abs_r = torch.abs(r)
+        huber_w = torch.where(abs_r <= huber_delta, torch.ones_like(r), huber_delta / (abs_r + 1e-8)) # TODO: Also put in the numpy version.
+
+        # Multiply the diagonal elements of W by huber weights
+        W_huber = W.clone()
+        W_huber_diag = torch.diagonal(W_huber) * huber_w
+        W_huber = torch.diag(W_huber_diag)  # rebuild diagonal matrix
+
+        # Apply weighted residuals and Jacobian
+        r_w = W_huber @ r
+        H_w = W_huber @ H
+
         # Apply weighting
-        r_w = W @ r                     # weighted residual
-        H_w = W @ H                     # weighted Jacobian
+        # r_w = W @ r                     # weighted residual
+        # H_w = W @ H                     # weighted Jacobian
 
         # Solve normal equations: (H^T H) delta = -H^T r
-        HTH = H_w.T @ H_w               # (n, n)
-        HTr = H_w.T @ r_w               # (n,)
-        delta = -torch.linalg.solve(HTH, HTr)
+        sol = torch.linalg.lstsq(H_w, -r_w)
+        delta = sol.solution           # (n,)
 
-        v = v + delta
-
+        v_new = v + delta
+        
         if delta.norm() < tol:
+            v = v_new
             break
 
+        if torch.norm(v_new[:3]) > 1e8:
+            # receiver cannot be 100,000 km from Earth
+            break
+
+        v = v_new
+        
     return v
 
-def calculate_dop(position: np.ndarray | torch.Tensor, H: np.ndarray | torch.Tensor, W: np.ndarray | torch.Tensor) -> dict:
+def calculate_dop(position: np.ndarray, H: np.ndarray, W: np.ndarray) -> dict:
     """
     Calculate Dilution of Precision (DOP) from geometry matrix and weights.
 
@@ -405,14 +438,17 @@ def calculate_dop_torch(
     H: torch.Tensor, 
     W: torch.Tensor
 ) -> dict:
-    """Torch-only version"""
     n_sats = H.shape[0]
     if n_sats < 4:
         print("Warning: Not enough satellites for DOP calculation")
         return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
 
-    cov_matrix = torch.linalg.inv(H.T @ W @ H)
-    
+    try:
+        cov_matrix = torch.linalg.inv(H.T @ W @ H)
+    except torch.linalg.LinAlgError:
+        print("Warning: Singular matrix in DOP calculation")
+        return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
+
     sigma_x2, sigma_y2, sigma_z2, sigma_t2 = (
         cov_matrix[0, 0], cov_matrix[1, 1], 
         cov_matrix[2, 2], cov_matrix[3, 3]
@@ -422,6 +458,7 @@ def calculate_dop_torch(
     tdop = torch.sqrt(sigma_t2)
     gdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2 + sigma_t2)
 
+    # Warning, breaks autograd - but so far isn't used in a way that requires gradients
     ecef_to_enu = torch.tensor(coords.ecef_to_enu_rot(position.detach().numpy()), dtype=torch.float64)
     pos_cov = cov_matrix[0:3, 0:3]
     enu_cov = ecef_to_enu @ pos_cov @ ecef_to_enu.T
@@ -505,7 +542,7 @@ def position(
     dop = calculate_dop(pos_output[:3], H_pos, Wx)
     if dop["pdop"] > 10.0:
         print(f"Warning: poor quality solution: PDOP {dop['pdop']:.1f}")
-        # return prev_estimate
+        return prev_estimate
 
     # Initial guess for velocity
     v0 = np.zeros(4)
@@ -561,7 +598,6 @@ def position_torch(
     -------
     new_pos : dict with torch.Tensor entries
     """
-
     # Previous estimate fallback
     if prev_estimate is None:
         prev_estimate = {
@@ -592,6 +628,7 @@ def position_torch(
         lambda x: pr_residuals_torch(x, sat_pos, pr),
         lambda x: jacobian_residuals_torch(x, sat_pos),
         Wx,
+        huber_delta=50.0
     )
 
     if torch.isnan(pos_output).any():
@@ -604,6 +641,7 @@ def position_torch(
     dop = calculate_dop_torch(pos_output[:3], H_pos, Wx)
     if dop["pdop"] > 10.0:
         print(f"Warning: poor quality solution: PDOP {dop['pdop']:.1f}")
+        return prev_estimate
 
     # Initial guess for velocity
     v0 = torch.zeros(4, dtype=pr.dtype, device=pr.device)
@@ -616,6 +654,7 @@ def position_torch(
         lambda v: prr_residuals_torch(v, sat_vel, prr, pos_output, sat_pos),
         lambda _: jacobian_residuals_torch(pos_output, sat_pos),
         Wv,
+        huber_delta=10.0
     )
 
     if torch.isnan(vel_output).any():
@@ -880,3 +919,4 @@ class Kalman_filter:
 
     def get_clock_drift(self):
         return float(self.x_[7, 0])
+    

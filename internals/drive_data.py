@@ -42,9 +42,6 @@ class Drive:
 
         if self.ground_truth_df_["AltitudeMeters"].isna().any():
             raise ValueError(f"Ground truth file contains missing altitude values: {ground_truth_path}")
-        
-        if not (self.device_gnss_df_['MultipathIndicator'] == 1).any():
-            print(f"Warning: No MultipathIndicator == 1 in device gnss file: {device_gnss_path}")
 
     def get_directory_name(self) -> str:
         return os.path.normpath(self.drive_path_)

@@ -8,4 +8,6 @@ cn0_figs/
 *.html
 *.pt
 *.png
-preprocessing_hashes/
+preprocessing_artifacts/
+single_epoch_evaluation/
+multi_epoch_evaluation/

@@ -5,16 +5,19 @@ from internals import gnss_positioning as gp
 from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.common as common
 
-TRAINING_DRIVES = [
-    os.path.join("2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"), 
-    os.path.join("2022-02-24-18-29-us-ca-lax-o", "mi8"),
-    os.path.join("2023-09-06-00-01-us-ca-routen", "pixel4xl"),
-    os.path.join("2023-03-08-21-34-us-ca-mtv-u", "pixel7pro"),
-    os.path.join("2023-05-24-20-26-us-ca-sjc-ge2", "pixel7pro"),
-    os.path.join("2021-03-10-23-13-us-ca-mtv-h", "mi8"),
-    os.path.join("2021-07-27-19-49-us-ca-mtv-b", "mi8"),
-    os.path.join("2021-08-04-20-40-us-ca-sjc-c", "sm-g988b"),
-]
+def colour_delta(val, max_val=1e1):
+    # Clamp magnitude to max_val
+    magnitude = min(abs(val), max_val)
+    # Scale intensity 0-255
+    intensity = int(30 + 225 * (magnitude / max_val))  # 30->255
+    if val > 0:
+        # Green: ANSI 38;2;r;g;b, using r=0, b=0, g=intensity
+        return f"\033[38;2;0;{intensity};0m{val:+.3e}\033[0m"
+    elif val < 0:
+        # Red: r=intensity, g=0, b=0
+        return f"\033[38;2;{intensity};0;0m{val:+.3e}\033[0m"
+    else:
+        return f"{val:+.3e}"  # no colour for zero
 
 def setup(base_path: str, network_cls: torch.nn.Module) -> None:
     global net, optimizer, features, scheduler
@@ -34,8 +37,11 @@ def setup(base_path: str, network_cls: torch.nn.Module) -> None:
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=5,
-        gamma=0.1
+        gamma=0.05
     )
+
+def step_scheduler():
+    scheduler.step()
 
 def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path: str) -> None:
     N = df['epoch_id'].nunique()
@@ -44,6 +50,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
     # This doesn't need any weights, the initial position is just to get a reasonable starting point
     epoch_start = df['epoch_id'].min()
     curr_pos = common.compute_pos_torch(df[df['epoch_id'] == epoch_start], pr_weights=None, pr_correction=None, prr_weights=None, curr_pos=None)
+    baseline_pos = curr_pos.copy()
 
     optimizer.zero_grad()
     epoch_num = 1
@@ -51,32 +58,21 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         pos_truth, vel_truth = common.get_ground_truth(truth_df, epoch_df)
         feats = get_feats(epoch_df, features, common.get_device())
 
-        pr_weights, pr_error, prr_weights = net(*feats)
-
-        # TODO: do this before outputting from the network.
-        Wx = torch.diag_embed(pr_weights.squeeze(1))
-        pr_error = pr_error.T.squeeze(0)
-        Wv = torch.diag_embed(prr_weights.squeeze(1))
+        Wx, pr_errors, Wv = net(*feats)
 
         # Get the baseline weights to compare model against
         Wx_baseline = torch.diag(torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float64, device='cpu'))
         Wv_baseline = torch.diag(torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float64, device='cpu'))
 
         # Update position estimate with weighted least squares - both model and baseline
-        baseline_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=curr_pos)
-        curr_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx, pr_correction=pr_error, prr_weights=Wv, curr_pos=curr_pos)
-
-        # pr_loss = torch.linalg.norm(curr_pos['position'] - pos_truth)
-        # pr_baseline_loss = torch.linalg.norm(baseline_pos['position'] - pos_truth)
-        # prr_baseline_loss = torch.linalg.norm(baseline_pos['velocity'] - vel_truth) # TODO: estimate clock drift velocity too from truth
-        # prr_loss = torch.linalg.norm(curr_pos['velocity'] - vel_truth)
+        baseline_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=baseline_pos)
+        curr_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx, pr_correction=pr_errors, prr_weights=Wv, curr_pos=curr_pos)
 
         pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float64, device=common.get_device())
         prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float64, device=common.get_device())
         sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float64, device=common.get_device())
         sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float64, device=common.get_device())
 
-        # clock_bias_truth, clock_drift_truth = gp.estimate_rx_clock_bias_and_drift_torch(pr, prr, sat_pos, sat_vel, pos_truth, vel_truth)
         pos_truth_vec = torch.concat([pos_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
         clock_bias_truth = gp.estimate_clock_bias_torch(pos_truth_vec, sat_pos, pr)
         pos_truth = torch.concat([pos_truth, clock_bias_truth.unsqueeze(0)])
@@ -102,13 +98,11 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
 
         pos_gain = pr_baseline_loss.detach().item() - pr_loss.detach().item()
         vel_gain = prr_baseline_loss.detach().item() - prr_loss.detach().item()
-        pos_pad = ' ' if pos_gain >= 0 else ''
-        vel_pad = ' ' if vel_gain >= 0 else ''
         epoch_pad = ' '*(len(str(N)) - len(str(epoch_num)))
         print(
-            f"Epoch {epoch_pad}{epoch_num} / {N} | "
-            f"Pos err: {pr_loss.item():.3e} m (baseline {pr_baseline_loss.item():.3e}, Δ{pos_pad}{pos_gain:.3e}) | "
-            f"Vel err: {prr_loss.item():.3e} m/s (baseline {prr_baseline_loss.item():.3e}, Δ{vel_pad}{vel_gain:.3e}) | "
+            f"GNSS Epoch {epoch_pad}{epoch_num} / {N} | "
+            f"Pos err: {pr_loss.item():.3e} m (baseline {pr_baseline_loss.item():.3e}, Δ{colour_delta(pos_gain, 1e1)}) | "
+            f"Vel err: {prr_loss.item():.3e} m/s (baseline {prr_baseline_loss.item():.3e}, Δ{colour_delta(vel_gain, 0.5)}) | "
             f"Combined Loss: {combined_loss.item():.3e}"
         )
         epoch_num += 1
@@ -119,7 +113,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         (combined_loss / 20).backward()
         if epoch_id % 20 == 0 or epoch_id == df['epoch_id'].unique().max():
             optimizer.step()
-            scheduler.step()
+            # scheduler.step() # TODO: Put this outside the run function and copy what I did for comp vis
             optimizer.zero_grad()
 
         # Detach the current position state for the next epoch
@@ -128,6 +122,12 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
             'velocity': curr_pos['velocity'].detach(),
             'clock_bias': curr_pos['clock_bias'].detach(),
             'clock_drift': curr_pos['clock_drift'].detach()
+        }
+        baseline_pos = {
+            'position': baseline_pos['position'].detach(),
+            'velocity': baseline_pos['velocity'].detach(),
+            'clock_bias': baseline_pos['clock_bias'].detach(),
+            'clock_drift': baseline_pos['clock_drift'].detach()
         }
 
     # Save the model after each file

@@ -4,9 +4,9 @@ import numpy as np
 import torch
 from argparse import ArgumentParser
 from internals.drive_data import Drive_iterator
-from internals.train import TRAINING_DRIVES, setup, run
+from internals.train import setup, run, step_scheduler
 from internals.common import compute_residual_matrix
-from model import Gnss_single_epoch_net
+from model import Gnss_single_epoch_net, get_training_drives
 
 def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple[torch.Tensor]:
     feats = epoch_df[features].to_numpy(dtype=np.float64)
@@ -33,15 +33,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     base_path = args.base_path
-    ALL_DRIVES = [os.path.join(d, p) for d in os.listdir(base_path) for p in os.listdir(os.path.join(base_path, d))]
-    drive_iter = Drive_iterator(
-        drive_paths=[os.path.join(base_path, p) for p in TRAINING_DRIVES],
-        mode="train"
-    )
-
     setup(base_path, Gnss_single_epoch_net)
 
-    for i, drive in enumerate(drive_iter):
-        print(f"Processing file: {drive.get_directory_name()}")
-        df, truth_df = drive.get_dataframes()
-        run(df, truth_df, get_feats, args.output_path)
+    for epoch_num in range(1, 11):
+        print(f"Starting training for epoch {epoch_num} / 10")
+        drive_iter = Drive_iterator(
+            drive_paths=get_training_drives(base_path),
+            mode="train"
+        )
+
+        for i, drive in enumerate(drive_iter):
+            print(f"Processing file: {drive.get_directory_name()}")
+            df, truth_df = drive.get_dataframes()
+            run(df, truth_df, get_feats, args.output_path)
+            step_scheduler()

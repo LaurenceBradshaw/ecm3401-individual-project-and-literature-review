@@ -1,9 +1,36 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from internals.preprocessing.hash_file import preprocessing_artifacts_path
 
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(42) # The meaning of life, the universe, and everything GNSS
+
+def _load_string_list(file_path: str) -> list[str]:
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}, please run the preprocessing script.")
+    with open(file_path, "r", encoding="utf-8") as f:
+        return [line.rstrip("\n") for line in f]
+    
+def get_test_drives(base_path: str) -> list[str]:
+    test_drives = _load_string_list(os.path.join(preprocessing_artifacts_path(), "test_drives.txt"))
+    # add base path back to test drives
+    test_drives = [os.path.join(base_path, d) for d in test_drives]
+    return test_drives
+
+def get_training_drives(base_path: str) -> list[str]:
+    all_drives = [
+        os.path.join(base_path, d, p)
+        for d in os.listdir(base_path)
+        if os.path.isdir(os.path.join(base_path, d))
+        for p in os.listdir(os.path.join(base_path, d))
+        if os.path.isdir(os.path.join(base_path, d, p))
+    ]
+    test_drives = set(get_test_drives(base_path))
+    training_drives = [d for d in all_drives if d not in test_drives]
+
+    return training_drives
 
 class Normalise(nn.Module):
     def __init__(self):
@@ -323,19 +350,11 @@ class Gnss_single_epoch_net(nn.Module):
         joint_feat = self.joint_mlp_(joint)
 
         pr_weight_logits = self.pr_weight_head_(joint_feat)
-        # pr_mean = pr_weight_logits.mean(dim=0, keepdim=True)
-        # pr_std = pr_weight_logits.std(dim=0, keepdim=True) + 1e-6
-        # pr_weight_logits = (pr_weight_logits - pr_mean) / pr_std
-        # pr_weights = torch.sigmoid(pr_weight_logits)
         pr_sigma = F.softplus(pr_weight_logits) + 1e-3
         pr_weights = 1.0 / (pr_sigma * pr_sigma)
         pr_errors = self.pr_error_head_(joint_feat)
 
         prr_weight_logits = self.prr_weight_head_(joint_feat)
-        # prr_mean = prr_weight_logits.mean(dim=0, keepdim=True)
-        # prr_std = prr_weight_logits.std(dim=0, keepdim=True) + 1e-6
-        # prr_weight_logits = (prr_weight_logits - prr_mean) / prr_std
-        # prr_weights = torch.sigmoid(prr_weight_logits)
         prr_sigma = F.softplus(prr_weight_logits) + 1e-3
         prr_weights = 1.0 / (prr_sigma * prr_sigma)
         # prr_errors = self.prr_error_head_(joint_feat)
@@ -351,7 +370,13 @@ class Gnss_single_epoch_net(nn.Module):
         assert not torch.allclose(pr_weights, pr_weights[0]), "All PR weights are the same, model is not learning"
         assert not torch.allclose(prr_weights, prr_weights[0]), "All PRR weights are the same, model is not learning"
 
-        return pr_weights, pr_errors, prr_weights
+        
+        Wx = torch.diag_embed(pr_weights.squeeze(1))
+        pr_errors = pr_errors.T.squeeze(0)
+        pr_errors = torch.clamp(pr_errors, -100, 100)
+        Wv = torch.diag_embed(prr_weights.squeeze(1))
+
+        return Wx, pr_errors, Wv
     
 class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but can reuse code
 
