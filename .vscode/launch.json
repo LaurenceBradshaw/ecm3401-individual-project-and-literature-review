@@ -32,7 +32,7 @@
             "args": [ 
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./single_epoch_network.pt",
-                "-d", "2020-06-25-00-34-us-ca-mtv-sb-101/pixel4xl",
+                "-o", "./single_epoch_evaluation",
                 // "--kf"
             ] 
         },
@@ -45,7 +45,7 @@
             "args": [ 
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./multi_epoch_network.pt",
-                "-d", "2020-06-25-00-34-us-ca-mtv-sb-101/pixel4xl",
+                "-o", "./multi_epoch_evaluation",
                 // "--kf"
             ] 
         },
