@@ -336,11 +336,12 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
 
     folium.LayerControl(collapsed=False).add_to(m)
 
-    map_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_trajectory_map_{save_postfix}.html")
+    kf_string = "kf" if kf_enabled else "no_kf"
+    map_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_trajectory_map_{kf_string}_{save_postfix}.html")
     m.save(map_save_name)
     print(f"Saved {map_save_name}")
 
-    cdf_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_error_cdf_{save_postfix}.png")
+    cdf_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_error_cdf_{kf_string}_{save_postfix}.png")
     cdf_result = compute_position_error_cdf(estimated_positions_baseline_ecef, estimated_positions_ecef, truth_positions_ecef)
     plt.figure(figsize=(12, 8))
     plt.figure(figsize=(12, 8))
@@ -354,7 +355,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     plt.close()
 
     # plot errors horizontal/vertical/3d over time
-    err_over_time_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_error_over_time_{save_postfix}.png")
+    err_over_time_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_error_over_time_{kf_string}_{save_postfix}.png")
     plt.figure(figsize=(12, 8))
     plt.subplot(3, 1, 1)
     plt.plot(err_horizontal, label="Horizontal Error (m)")
