@@ -405,43 +405,7 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
     if df.empty: # No valid data after filtering
         print(f"No valid data after filtering, skipping drive: {drive.get_directory_name()}")
         return
-
-    # Apply corrections to pseudorange and pseudorange rate
-    df[PR_COL] = df['RawPseudorangeMeters'] - df['IonosphericDelayMeters'] - df['TroposphericDelayMeters'] - df['IsrbMeters'] + df['SvClockBiasMeters']
-    df[PRR_COL] = df['PseudorangeRateMetersPerSecond'] + df['SvClockDriftMetersPerSecond']
-
-    # Derived features
-    df["sin_elevation"] = np.sin(np.deg2rad(df['SvElevationDegrees']))
-    df["cos_elevation"] = np.cos(np.deg2rad(df['SvElevationDegrees']))
-    df["sin_azimuth"] = np.sin(np.deg2rad(df['SvAzimuthDegrees']))
-    df["cos_azimuth"] = np.cos(np.deg2rad(df['SvAzimuthDegrees']))
-    df["wavelength"] = SPEED_OF_LIGHT / df['CarrierFrequencyHz']
-    df['Cn0DbHz_linear'] = 10 ** (df['Cn0DbHz'] / 10)
-
-    # Identify if satellite was seen in previous epoch or is newly appeared
-    df['prev_epoch_seen'] = df.groupby(['ConstellationType', 'Svid'])['epoch_id'].shift()
-    df["seen_t_minus_1"] = df["epoch_id"] - df["prev_epoch_seen"] == 1
-
-    df["sat_identifier"] = (
-        df["ConstellationType"].map(lambda c: CONSTELLATION_MAP.get(c, "UNK"))
-        + "_" 
-        + df["Svid"].astype(int).astype(str)
-    )
     
-    # Process each satellite individually for all epochs
-    for (constellation, svid), sat_df in df.groupby(['ConstellationType', 'Svid']):
-        validate_satellite_data(df, sat_df['sat_identifier'].values[0], sat_df)
-        reconstruct_phase_data(df, sat_df)
-
-    # Remove rows marked as bad_satellite, since interpolation on the sat pos/vel is not sufficient
-    df = df[df['sat_flag'] != 'bad_satellite']
-    # Filter out epochs with insufficient satellites
-    # Should be done with removing rows now
-    df = df.groupby('epoch_id').filter(lambda x: len(x) >= 5)
-    if df.empty:
-        print(f"No valid data after filtering, skipping drive: {drive.get_directory_name()}")
-        return
-
     # Check to see if any duplicate satellites in the same epoch and try to resolve them
     duplicate_epochs = df.duplicated(subset=['epoch_id', 'ConstellationType', 'Svid', 'SignalType'], keep=False)
     if duplicate_epochs.any():
@@ -467,6 +431,49 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
                 else:
                     # Drop duplicates
                     df.drop(group.index[1:], inplace=True)
+
+    # Apply corrections to pseudorange and pseudorange rate
+    df[PR_COL] = df['RawPseudorangeMeters'] - df['IonosphericDelayMeters'] - df['TroposphericDelayMeters'] - df['IsrbMeters'] + df['SvClockBiasMeters']
+    df[PRR_COL] = df['PseudorangeRateMetersPerSecond'] + df['SvClockDriftMetersPerSecond']
+
+    # Derived features
+    df["sin_elevation"] = np.sin(np.deg2rad(df['SvElevationDegrees']))
+    df["cos_elevation"] = np.cos(np.deg2rad(df['SvElevationDegrees']))
+    df["sin_azimuth"] = np.sin(np.deg2rad(df['SvAzimuthDegrees']))
+    df["cos_azimuth"] = np.cos(np.deg2rad(df['SvAzimuthDegrees']))
+    df["wavelength"] = SPEED_OF_LIGHT / df['CarrierFrequencyHz']
+    df['Cn0DbHz_linear'] = 10 ** (df['Cn0DbHz'] / 10)
+    df['inverse_pr_unc'] = 1 / df['RawPseudorangeUncertaintyMeters']
+    df['inverse_prr_unc'] = 1 / df['PseudorangeRateUncertaintyMetersPerSecond']
+
+    elev_factor = 1 + 0.5 / np.sin(np.deg2rad(df['SvElevationDegrees']))**2
+    cn0_factor = 1 + 5 * np.exp(-df['Cn0DbHz'] / 10)
+    df['elev_factor'] = elev_factor
+    df['cn0_factor'] = cn0_factor
+
+    # Identify if satellite was seen in previous epoch or is newly appeared
+    df['prev_epoch_seen'] = df.groupby(['ConstellationType', 'Svid'])['epoch_id'].shift()
+    df["seen_t_minus_1"] = df["epoch_id"] - df["prev_epoch_seen"] == 1
+
+    df["sat_identifier"] = (
+        df["ConstellationType"].map(lambda c: CONSTELLATION_MAP.get(c, "UNK"))
+        + "_" 
+        + df["Svid"].astype(int).astype(str)
+    )
+    
+    # Process each satellite individually for all epochs
+    for (constellation, svid), sat_df in df.groupby(['ConstellationType', 'Svid']):
+        validate_satellite_data(df, sat_df['sat_identifier'].values[0], sat_df)
+        reconstruct_phase_data(df, sat_df)
+
+    # Remove rows marked as bad_satellite, since interpolation on the sat pos/vel is not sufficient
+    df = df[df['sat_flag'] != 'bad_satellite']
+    # Filter out epochs with insufficient satellites
+    # Should be done with removing rows now
+    df = df.groupby('epoch_id').filter(lambda x: len(x) >= 5)
+    if df.empty:
+        print(f"No valid data after filtering, skipping drive: {drive.get_directory_name()}")
+        return
                     
     # Assert no more duplicates
     duplicate_epochs = df.duplicated(subset=['epoch_id', 'ConstellationType', 'Svid', 'SignalType'], keep=False)
@@ -482,20 +489,27 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
         calc_epoch_level_stats(df, epoch_df, curr_pos)
 
         # Baseline weights
-        pr_weights_baseline = 1 / ((1/epoch_df['sin_elevation'])**2 + (4*10**(-epoch_df['Cn0DbHz']/30))**2)
+        sigma_elev_pr = (3 / epoch_df['sin_elevation'])**2
+        sigma_cn0_pr = 5 * np.exp(-epoch_df['Cn0DbHz']/20)
+        pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr)
         df.loc[epoch_df.index, 'pr_baseline_weight'] = pr_weights_baseline
-        prr_weights_baseline = np.zeros(len(epoch_df))
-        i = 0
+        sigma_elev_prr = (0.1 / epoch_df['sin_elevation'])**2
+        sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
+        prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr)
+        df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
+        # pr_weights_baseline = 1 / ((1/epoch_df['sin_elevation'])**2 + (4*10**(-epoch_df['Cn0DbHz']/30))**2)
+        # prr_weights_baseline = np.zeros(len(epoch_df))
+        # i = 0
 
         # For each satellite in epoch
         for sat_id, sat_row in epoch_df.iterrows():
             calc_satellite_data(df, sat_id, sat_row, epoch_manager)
-            prr_weights_baseline[i] = compute_prr_baseline_weight(sat_samples, sat_row)
-            i += 1
+            # prr_weights_baseline[i] = compute_prr_baseline_weight(sat_samples, sat_row)
+            # i += 1
             
             
         # Save weights back to DataFrame
-        df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
+        # df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
 
     prev_epoch = None
     df['adr_td_residual'] = 0.0

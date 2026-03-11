@@ -150,7 +150,7 @@ def prr_residuals(v: np.ndarray, vsat: np.ndarray, prr: np.ndarray, x: np.ndarra
 
     return residuals
 
-def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, max_iters: int=50, tol: float=1e-6):
+def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, huber_delta: float, max_iters: int=50, tol: float=1e-6):
     """
     Weighted least squares solver using iterative normal equations.
 
@@ -180,28 +180,23 @@ def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, 
         r = residuals_func(v)      # (m,)
         H = jacobian_func(v)       # (m, n)
 
+        abs_r = np.abs(r)
+        huber_w = np.where(abs_r <= huber_delta, 1.0, huber_delta / (abs_r + 1e-8))
+        W_huber_diag = np.diagonal(W) * huber_w
+        W_huber = np.diag(W_huber_diag)
+
         # Apply weighting
-        r_w = W @ r                # weighted residual
-        H_w = W @ H                # weighted Jacobian
+        r_w = W_huber @ r                # weighted residual
+        H_w = W_huber @ H                # weighted Jacobian
 
         # Solve normal equations: (H^T H) delta = -H^T r
-        HTH = H_w.T @ H_w          # (n, n)
-        HTr = H_w.T @ r_w          # (n,)
-        try:
-            delta = -np.linalg.solve(HTH, HTr)
-        except np.linalg.LinAlgError:
-            # fallback to pseudo-inverse if singular
-            delta = -np.linalg.pinv(HTH) @ HTr
+        delta, _, _, _ = np.linalg.lstsq(H_w, -r_w, rcond=None)
 
         v_new = v + delta
 
         # Check convergence
         if np.linalg.norm(delta) < tol:
             v = v_new
-            break
-
-        # receiver cannot be 100,000 km from Earth, sanity check to prevent divergence
-        if np.linalg.norm(v_new[:3]) > 1e8:
             break
 
         v = v_new
@@ -348,7 +343,9 @@ def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torc
 
         # Compute Huber weights (elementwise, differentiable)
         abs_r = torch.abs(r)
-        huber_w = torch.where(abs_r <= huber_delta, torch.ones_like(r), huber_delta / (abs_r + 1e-8)) # TODO: Also put in the numpy version.
+        huber_w = torch.where(abs_r <= huber_delta, torch.ones_like(r), huber_delta / (abs_r + 1e-8))
+        # huber_w = huber_delta / (torch.sqrt(r**2 + huber_delta**2) + 1e-8)
+        huber_w.detach()
 
         # Multiply the diagonal elements of W by huber weights
         W_huber = W.clone()
@@ -359,10 +356,6 @@ def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torc
         r_w = W_huber @ r
         H_w = W_huber @ H
 
-        # Apply weighting
-        # r_w = W @ r                     # weighted residual
-        # H_w = W @ H                     # weighted Jacobian
-
         # Solve normal equations: (H^T H) delta = -H^T r
         sol = torch.linalg.lstsq(H_w, -r_w)
         delta = sol.solution           # (n,)
@@ -371,10 +364,6 @@ def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torc
         
         if delta.norm() < tol:
             v = v_new
-            break
-
-        if torch.norm(v_new[:3]) > 1e8:
-            # receiver cannot be 100,000 km from Earth
             break
 
         v = v_new
@@ -531,6 +520,7 @@ def position(
         lambda x: pr_residuals(x, sat_pos, pr),
         lambda x: jacobian_residuals(x, sat_pos),
         Wx,
+        huber_delta=50.0
     )
 
     if np.isnan(pos_output).any():
@@ -555,6 +545,7 @@ def position(
         lambda v: prr_residuals(v, sat_vel, prr, pos_output, sat_pos),
         lambda _: jacobian_residuals(pos_output, sat_pos),
         Wv,
+        huber_delta=5.0
     )
 
     if np.isnan(vel_output).any():
@@ -641,7 +632,7 @@ def position_torch(
     dop = calculate_dop_torch(pos_output[:3], H_pos, Wx)
     if dop["pdop"] > 10.0:
         print(f"Warning: poor quality solution: PDOP {dop['pdop']:.1f}")
-        return prev_estimate
+        # return prev_estimate
 
     # Initial guess for velocity
     v0 = torch.zeros(4, dtype=pr.dtype, device=pr.device)
@@ -654,7 +645,7 @@ def position_torch(
         lambda v: prr_residuals_torch(v, sat_vel, prr, pos_output, sat_pos),
         lambda _: jacobian_residuals_torch(pos_output, sat_pos),
         Wv,
-        huber_delta=10.0
+        huber_delta=5.0
     )
 
     if torch.isnan(vel_output).any():
@@ -770,7 +761,6 @@ def estimate_clock_drift_torch(
 class Kalman_filter:
     def __init__(
         self,
-        dt=1.0,
         # Process noise
         sigma_acc = 2.0,      # m/s2 - acceleration noise
         sigma_b = 30.0,       # m - clock bias process noise
@@ -788,36 +778,21 @@ class Kalman_filter:
         max_speed = 50.0,           # m/s (~180 km/h) - upper limit for cars
     ):
         self.initialised_ = False
-        self.dt_ = dt
         self.min_speed_threshold_ = min_speed_threshold
         self.max_speed_ = max_speed
         self.stationary_count_ = 0
-
-        I3 = np.eye(3)
+        self.sigma_acc_ = sigma_acc
+        self.sigma_b_ = sigma_b
+        self.sigma_d_ = sigma_d
 
         # State transition F (8x8)
         self.F_ = np.eye(8)
-        self.F_[0:3, 3:6] = dt * I3 # position depends on velocity
-        self.F_[6, 7] = dt          # clock bias depends on drift
 
         # Observation H (8x8) - measuring state directly
         self.H_ = np.eye(8)
 
         # Process noise Q (8x8)
         self.Q_ = np.zeros((8, 8))
-
-        q11 = (dt**4) / 4.0 * I3
-        q12 = (dt**3) / 2.0 * I3
-        q22 = (dt**2) * I3
-
-        self.Q_[0:3, 0:3] = q11
-        self.Q_[0:3, 3:6] = q12
-        self.Q_[3:6, 0:3] = q12
-        self.Q_[3:6, 3:6] = q22
-        self.Q_[6, 6] = sigma_b * sigma_b
-        self.Q_[7, 7] = sigma_d * sigma_d
-
-        self.Q_[0:6, 0:6] *= (sigma_acc * sigma_acc)
 
         # Measurement noise R (8x8)
         self.R_ = np.zeros((8, 8))
@@ -847,9 +822,30 @@ class Kalman_filter:
         self.x_[7, 0] = clock_drift
         self.initialised_ = True
 
-    def predict(self, current_speed=None):
+    def predict(self, dt, current_speed=None):
         if not self.initialised_:
             return
+
+        I3 = np.eye(3)
+        
+        self.F_.fill(0)
+        np.fill_diagonal(self.F_, 1.0)
+        self.F_[0:3, 3:6] = dt * I3 # position depends on velocity
+        self.F_[6, 7] = dt          # clock bias depends on drift
+
+        q11 = (dt**4) / 4.0 * I3
+        q12 = (dt**3) / 2.0 * I3
+        q22 = (dt**2) * I3
+
+        self.Q_.fill(0)
+        self.Q_[0:3, 0:3] = q11
+        self.Q_[0:3, 3:6] = q12
+        self.Q_[3:6, 0:3] = q12
+        self.Q_[3:6, 3:6] = q22
+        self.Q_[6, 6] = self.sigma_b_ * self.sigma_b_
+        self.Q_[7, 7] = self.sigma_d_ * self.sigma_d_
+
+        self.Q_[0:6, 0:6] *= (self.sigma_acc_ * self.sigma_acc_)
 
         # Adapt process noise based on speed
         Q = self.Q_.copy()
@@ -881,7 +877,7 @@ class Kalman_filter:
         if hdop is not None:
             # HDOP (horizontal dilution of precision) - lower is better
             # Inflate measurement noise based on HDOP
-            hdop_factor = max(hdop / 2.0, 1.0)  # Baseline HDOP=2
+            hdop_factor = max(hdop / 2.0, 1.0)**2  # Baseline HDOP=2
             R[0:3, 0:3] *= hdop_factor
         
         if satellite_count is not None and satellite_count < 6:

@@ -29,20 +29,29 @@ if __name__ == "__main__":
         type=str, 
         default="./single_epoch_network.pt", 
         help="Path to save the trained model. (default: %(default)s)"
-        ) 
+        )
+    parser.add_argument(
+        "-c", "--compute_baseline",
+        default=False,
+        action="store_true",
+        help="Whether to compute baseline performance for comparison. (default: %(default)s)"
+    )
     args = parser.parse_args()
 
     base_path = args.base_path
-    setup(base_path, Gnss_single_epoch_net)
+    setup(base_path, Gnss_single_epoch_net, args.compute_baseline)
 
-    for epoch_num in range(1, 11):
-        print(f"Starting training for epoch {epoch_num} / 10")
+    num_epochs = 10
+
+    for epoch_num in range(1, num_epochs + 1):
+        print(f"======== Starting training for epoch {epoch_num} / {num_epochs} ========")
         drive_iter = Drive_iterator(
             drive_paths=get_training_drives(base_path),
             mode="train"
         )
 
         for i, drive in enumerate(drive_iter):
+            print(f"Epoch: {epoch_num} / {num_epochs}")
             print(f"Processing file: {drive.get_directory_name()}")
             df, truth_df = drive.get_dataframes()
             run(df, truth_df, get_feats, args.output_path)

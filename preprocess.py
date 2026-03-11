@@ -11,9 +11,6 @@ from internals.preprocessing.focused_subsets import HASH_FILE as FOCUSED_SUBSETS
 from internals.preprocessing.find_test_set import find_test_set
 
 # This file is wildly inefficient since it loops through the data multiple times.
-# TODO: optimise later.
-# TODO: Split this file up into its 3 distinct parts: general processing, dataset stats, subset selection. Then hash can be done for each part
-#       Although there are transitive dependencies. i.e., if general processing changes, then subsequent steps need to be redone. this is the only case.
 
 def load_hash_table(file_name: str) -> dict:
     hash_dir = preprocessing_artifacts_path()

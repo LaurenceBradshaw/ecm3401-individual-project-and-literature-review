@@ -34,7 +34,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--kf",
         default=False,
-        type=bool,
         action="store_true",
         help="Whether to use a Kalman filter for trajectory estimation instead of just weighted least squares. (default: %(default)s)"
     )
@@ -48,7 +47,6 @@ if __name__ == "__main__":
         "-d", "--drive",
         type=str,
         help="Specific drive to evaluate - If not provided, will evaluate on all test drives. Must be a directory within the base path. (e.g. '2020-06-25-00-34-us-ca-mtv-sb-101/pixel4xl')",
-        default=None
     )
     args = parser.parse_args()
     base_path = args.base_path
@@ -65,16 +63,22 @@ if __name__ == "__main__":
     save_dir = args.output_path
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-
+        
     setup(Gnss_single_epoch_net, args.model_path, kf=args.kf)
+
+    kf_string = "kf" if args.kf else "no_kf"
+    save_postfix = "single_epoch"
+
+    if os.path.exists(os.path.join(save_dir, f"results_{kf_string}_{save_postfix}.txt")):
+        os.remove(os.path.join(save_dir, f"results_{kf_string}_{save_postfix}.txt"))
 
     results = []
     for drive in drive_iter:
         print(f"Evaluating file: {drive.get_directory_name()}")
-        error_dict = run(drive, get_feats, save_dir, "single_epoch")
+        error_dict = run(drive, get_feats, save_dir, save_postfix)
         results.append(error_dict)
 
-    print_global_error_all_files(results)
+    print_global_error_all_files(results, save_dir, kf_string, save_postfix)
 
 #     # data_iter = Data_file_iterator(base_path, split='train', prefix='2022-02-24-18-29-us-ca-lax-o')
 #     data_iter = Data_file_iterator(base_path, split='train', prefix='2021-07-14-20-50-us-ca-mtv-e')

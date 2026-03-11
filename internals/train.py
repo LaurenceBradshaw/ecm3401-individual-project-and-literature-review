@@ -19,10 +19,12 @@ def colour_delta(val, max_val=1e1):
     else:
         return f"{val:+.3e}"  # no colour for zero
 
-def setup(base_path: str, network_cls: torch.nn.Module) -> None:
-    global net, optimizer, features, scheduler
+def setup(base_path: str, network_cls: torch.nn.Module, compute_baseline: bool) -> None:
+    global net, optimizer, features, scheduler, _compute_baseline
     ###############
     features = network_cls.features
+
+    _compute_baseline = compute_baseline
 
     dataset_stats_file = f"{base_path}/dataset_stats.csv"
     stats_df = pd.read_csv(dataset_stats_file)
@@ -49,7 +51,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
     # Initial position estimate using first epoch otherwise gradients are terrible initially
     # This doesn't need any weights, the initial position is just to get a reasonable starting point
     epoch_start = df['epoch_id'].min()
-    curr_pos = common.compute_pos_torch(df[df['epoch_id'] == epoch_start], pr_weights=None, pr_correction=None, prr_weights=None, curr_pos=None)
+    curr_pos = common.compute_pos_torch(df[df['epoch_id'] == epoch_start], pr_weights=None, pr_correction=None, prr_weights=None, prr_correction=None, curr_pos=None)
     baseline_pos = curr_pos.copy()
 
     optimizer.zero_grad()
@@ -58,53 +60,49 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         pos_truth, vel_truth = common.get_ground_truth(truth_df, epoch_df)
         feats = get_feats(epoch_df, features, common.get_device())
 
-        Wx, pr_errors, Wv = net(*feats)
+        Wx, pr_errors, Wv, prr_errors = net(*feats)
 
-        # Get the baseline weights to compare model against
-        Wx_baseline = torch.diag(torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float64, device='cpu'))
-        Wv_baseline = torch.diag(torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float64, device='cpu'))
+        if _compute_baseline:
+            # Get the baseline weights to compare model against
+            Wx_baseline = torch.diag(torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float64, device='cpu')) # TODO: Test against inverse measurement uncertainty.
+            Wv_baseline = torch.diag(torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float64, device='cpu'))
 
-        # Update position estimate with weighted least squares - both model and baseline
-        baseline_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, curr_pos=baseline_pos)
-        curr_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx, pr_correction=pr_errors, prr_weights=Wv, curr_pos=curr_pos)
+            # Update position estimate with weighted least squares - both model and baseline
+            baseline_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, prr_correction=None, curr_pos=baseline_pos)
 
-        pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float64, device=common.get_device())
-        prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float64, device=common.get_device())
-        sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float64, device=common.get_device())
-        sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float64, device=common.get_device())
+            pr_baseline = torch.concat([baseline_pos['position'], baseline_pos['clock_bias'].unsqueeze(0)])
+            prr_baseline = torch.concat([baseline_pos['velocity'], baseline_pos['clock_drift'].unsqueeze(0)])
 
-        pos_truth_vec = torch.concat([pos_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
-        clock_bias_truth = gp.estimate_clock_bias_torch(pos_truth_vec, sat_pos, pr)
-        pos_truth = torch.concat([pos_truth, clock_bias_truth.unsqueeze(0)])
+            pr_baseline_loss = torch.linalg.norm(pr_baseline - pos_truth)
+            prr_baseline_loss = torch.linalg.norm(prr_baseline - vel_truth)
 
-        vel_truth_vec = torch.concat([vel_truth, torch.zeros(1, dtype=torch.float64, device=common.get_device())])
-        clock_drift_truth = gp.estimate_clock_drift_torch(pos_truth, vel_truth_vec, sat_pos, sat_vel, prr)
-        vel_truth = torch.concat([vel_truth, clock_drift_truth.unsqueeze(0)])
+        curr_pos = common.compute_pos_torch(epoch_df, pr_weights=Wx, pr_correction=pr_errors, prr_weights=Wv, prr_correction=prr_errors, curr_pos=curr_pos)
 
-        pr_baseline = torch.concat([baseline_pos['position'], baseline_pos['clock_bias'].unsqueeze(0)])
         pr_model = torch.concat([curr_pos['position'], curr_pos['clock_bias'].unsqueeze(0)])
-        prr_baseline = torch.concat([baseline_pos['velocity'], baseline_pos['clock_drift'].unsqueeze(0)])
         prr_model = torch.concat([curr_pos['velocity'], curr_pos['clock_drift'].unsqueeze(0)])
 
-        pr_baseline_loss = torch.linalg.norm(pr_baseline - pos_truth)
         pr_loss = torch.linalg.norm(pr_model - pos_truth)
-        prr_baseline_loss = torch.linalg.norm(prr_baseline - vel_truth)
         prr_loss = torch.linalg.norm(prr_model - vel_truth)
 
-        combined_loss = (
-            10 * pr_loss
-            + 30 * prr_loss
-        )
+        combined_loss = 10 * pr_loss + 30 * prr_loss
 
-        pos_gain = pr_baseline_loss.detach().item() - pr_loss.detach().item()
-        vel_gain = prr_baseline_loss.detach().item() - prr_loss.detach().item()
         epoch_pad = ' '*(len(str(N)) - len(str(epoch_num)))
-        print(
-            f"GNSS Epoch {epoch_pad}{epoch_num} / {N} | "
-            f"Pos err: {pr_loss.item():.3e} m (baseline {pr_baseline_loss.item():.3e}, Δ{colour_delta(pos_gain, 1e1)}) | "
-            f"Vel err: {prr_loss.item():.3e} m/s (baseline {prr_baseline_loss.item():.3e}, Δ{colour_delta(vel_gain, 0.5)}) | "
-            f"Combined Loss: {combined_loss.item():.3e}"
-        )
+        if _compute_baseline:
+            pos_gain = pr_baseline_loss.detach().item() - pr_loss.detach().item()
+            vel_gain = prr_baseline_loss.detach().item() - prr_loss.detach().item()
+            print(
+                f"GNSS Epoch {epoch_pad}{epoch_num} / {N} | "
+                f"Pos err: {pr_loss.item():.3e} m (baseline {pr_baseline_loss.item():.3e}, Δ{colour_delta(pos_gain, 1e1)}) | "
+                f"Vel err: {prr_loss.item():.3e} m/s (baseline {prr_baseline_loss.item():.3e}, Δ{colour_delta(vel_gain, 0.5)}) | "
+                f"Combined Loss: {combined_loss.item():.3e}"
+            )
+        else:
+            print(
+                f"GNSS Epoch {epoch_pad}{epoch_num} / {N} | "
+                f"Pos err: {pr_loss.item():.3e} m | "
+                f"Vel err: {prr_loss.item():.3e} m/s | "
+                f"Combined Loss: {combined_loss.item():.3e}"
+            )
         epoch_num += 1
 
         # Simulate batching by accumulating gradients over a number of epochs
@@ -113,7 +111,6 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         (combined_loss / 20).backward()
         if epoch_id % 20 == 0 or epoch_id == df['epoch_id'].unique().max():
             optimizer.step()
-            # scheduler.step() # TODO: Put this outside the run function and copy what I did for comp vis
             optimizer.zero_grad()
 
         # Detach the current position state for the next epoch
@@ -123,12 +120,13 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
             'clock_bias': curr_pos['clock_bias'].detach(),
             'clock_drift': curr_pos['clock_drift'].detach()
         }
-        baseline_pos = {
-            'position': baseline_pos['position'].detach(),
-            'velocity': baseline_pos['velocity'].detach(),
-            'clock_bias': baseline_pos['clock_bias'].detach(),
-            'clock_drift': baseline_pos['clock_drift'].detach()
-        }
+        if _compute_baseline:
+            baseline_pos = {
+                'position': baseline_pos['position'].detach(),
+                'velocity': baseline_pos['velocity'].detach(),
+                'clock_bias': baseline_pos['clock_bias'].detach(),
+                'clock_drift': baseline_pos['clock_drift'].detach()
+            }
 
     # Save the model after each file
     torch.save(net.state_dict(), save_path)

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from internals.preprocessing.hash_file import preprocessing_artifacts_path
 
 torch.set_default_dtype(torch.float64)
-torch.manual_seed(42) # The meaning of life, the universe, and everything GNSS
+torch.manual_seed(42 * 42) # The meaning of life, the universe, and everything GNSS
 
 def _load_string_list(file_path: str) -> list[str]:
     if not os.path.isfile(file_path):
@@ -32,14 +32,6 @@ def get_training_drives(base_path: str) -> list[str]:
 
     return training_drives
 
-class Normalise(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x / torch.max(torch.abs(x))
-    
-
 class Standardiser(nn.Module):
     def __init__(self, mean: torch.Tensor, std: torch.Tensor, need_standardising: torch.Tensor):
         super().__init__()
@@ -47,14 +39,35 @@ class Standardiser(nn.Module):
         self.register_buffer("std", std)
         self.register_buffer("need_standardising", need_standardising)
 
-    def forward(self, x: torch.Tensor, ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_std = (x - self.mean) / self.std
         return torch.where(self.need_standardising, x_std, x)
-    
+
+
+class Residual_block(nn.Module):
+    """
+    A residual block with two linear layers, ReLU activations, optional dropout,
+    and LayerNorm applied after the skip connection.
+    Input and output dims are both `dim`, so no projection is needed.
+    """
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.block_ = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout),
+            nn.Linear(dim, dim),
+        )
+        self.norm_ = nn.LayerNorm(dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm_(x + self.block_(x))
+
 
 class Single_sat_encoder(nn.Module):
     """
-    Encodes each satellite independently using a small MLP.
+    Encodes each satellite independently using a small MLP with a residual
+    skip connection from input to output (projected if dims differ).
     """
     def __init__(self, feat_dim: int, hidden_dim: int, emb_dim: int, dropout: float):
         super().__init__()
@@ -65,10 +78,16 @@ class Single_sat_encoder(nn.Module):
             nn.Linear(hidden_dim, emb_dim),
             nn.ReLU(inplace=True),
         )
+        # Project input to emb_dim for the residual if dims differ
+        self.residual_proj_ = (
+            nn.Linear(feat_dim, emb_dim, bias=False)
+            if feat_dim != emb_dim else nn.Identity()
+        )
+        self.norm_ = nn.LayerNorm(emb_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (num_sats, feat_dim)
-        return self.net_(x)
+        return self.norm_(self.net_(x) + self.residual_proj_(x))
 
 
 class Multi_sat_encoder(nn.Module):
@@ -90,12 +109,13 @@ class Multi_sat_encoder(nn.Module):
         seq = sats.unsqueeze(1) # (num_sats, 1, feat_dim)
         lstm_out, _ = self.lstm_(seq)
         return lstm_out.squeeze(1) # (num_sats, lstm_hidden)
-    
+
+
 class Temporal_sat_encoder(nn.Module):
     """
     Encodes the per-satellite time sequence into a fixed-size vector.
-    Input shape: (time_steps, feat_dim)
-    Output shape: (emb_dim)
+    Input shape:  (num_sats, time_steps, feat_dim)
+    Output shape: (num_sats, emb_dim)
     """
     def __init__(self, feat_dim: int, lstm_hidden: int, lstm_layers: int, emb_dim: int, dropout: float):
         super().__init__()
@@ -115,7 +135,11 @@ class Temporal_sat_encoder(nn.Module):
             nn.Dropout(p=dropout),
         )
 
-    def forward(self, seq: torch.Tensor, lengths: torch.Tensor):
+        # Skip connection: lstm_hidden -> emb_dim (bias=False keeps it a pure linear map)
+        self.skip_ = nn.Linear(lstm_hidden, emb_dim, bias=False)
+        self.norm_ = nn.LayerNorm(emb_dim)
+
+    def forward(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         # seq:     (num_sats, time_steps, feat_dim)
         # lengths: (num_sats,) valid sequence lengths
 
@@ -128,11 +152,11 @@ class Temporal_sat_encoder(nn.Module):
 
         _, (h_n, _) = self.lstm_(packed)
 
-        # final hidden state from last layer
-        last_hidden = h_n[-1] # (num_sats, lstm_hidden)
+        # Final hidden state from last layer: (num_sats, lstm_hidden)
+        last_hidden = h_n[-1]
 
-        return self.proj_(last_hidden) # (num_sats, emb_dim)
-    
+        return self.norm_(self.proj_(last_hidden) + self.skip_(last_hidden))
+
 
 class Pairwise_attention_encoder(nn.Module):
     def __init__(self, hidden_dim, output_dim):
@@ -168,7 +192,7 @@ class Pairwise_attention_encoder(nn.Module):
 
 
 class Gnss_single_epoch_net(nn.Module):
-
+# TODO: add inverse measurement uncertainty.
     features = [
         'Cn0DbHz_linear',          # signal strength
         'sin_elevation',           # sat geometry
@@ -176,14 +200,18 @@ class Gnss_single_epoch_net(nn.Module):
         'sin_azimuth',             # sat geometry
         'cos_azimuth',             # sat geometry
         'residual',                # pseudorange residual (from WLS)
-        'rate_residual',
-        'doppler_residual',
+        'rate_residual',           # pseudorange rate residual (from WLS)
+        'doppler_residual',        # doppler residual. estimated by doppler shift
         # 'cn0_over_sine',
         'cn0_stability',           # signal strength stability over time
         'pr_stability',            # pseudorange stability over time
         'prr_stability',           # pseudorange rate stability over time
-        'adr_td_residual',         # time-differenced ADR residual
+        'adr_td_residual',         # time-differenced ADR residual. estimated from the change in ADR between epochs compared to prr
         'adr_td_valid',            # whether the ADR time-differenced residual is valid
+        # 'inverse_pr_unc',          # inverse of raw pseudorange uncertainty (measurement quality)
+        # 'inverse_prr_unc',         # inverse of pseudorange rate uncertainty (measurement quality)
+        # 'elev_factor',             # elevation-based scaling factor for measurement uncertainty
+        # 'cn0_factor',              # signal strength-based scaling factor for measurement uncertainty
         # State indicators
         # 'code_lock',
         # 'bit_sync',
@@ -213,6 +241,10 @@ class Gnss_single_epoch_net(nn.Module):
         True,   # prr_stability
         True,   # adr_td_residual
         False,  # adr_td_valid
+        # True,   # inverse_pr_unc
+        # True,   # inverse_prr_unc
+        # True,   # elev_factor
+        # True,   # cn0_factor
         # State indicators
         # False,  # code_lock
         # False,  # bit_sync
@@ -236,13 +268,13 @@ class Gnss_single_epoch_net(nn.Module):
         feat_dim: int,
         mean: torch.Tensor,
         std: torch.Tensor,
-        per_sat_hidden: int = 256,
-        per_sat_emb_dim: int = 256,
-        lstm_hidden: int = 256,
+        per_sat_hidden: int = 512,
+        per_sat_emb_dim: int = 512,
+        lstm_hidden: int = 512,
         lstm_layers: int = 1,
         pairwise_attn_hidden: int = 128,
         pairwise_attn_output: int = 128,
-        joint_hidden: int = 256,
+        joint_hidden: int = 512,
         dropout: float = 0.1,
         need_standardising: torch.Tensor = None,
         require_standardisation: bool = True,
@@ -278,72 +310,74 @@ class Gnss_single_epoch_net(nn.Module):
             output_dim=pairwise_attn_output,
         )
 
-        joint_input_dim = per_sat_emb_dim + lstm_hidden + 2*pairwise_attn_output
+        joint_input_dim = per_sat_emb_dim + lstm_hidden + 2 * pairwise_attn_output
 
         self.joint_mlp_ = nn.Sequential(
             nn.Linear(joint_input_dim, joint_hidden),
             nn.ReLU(inplace=True),
         )
 
-        # Weight head MLP
+        # PR weight head
+        # Two residual blocks keep gradients healthy through the deeper path;
+        # the final Linear + softplus is applied in forward().
         self.pr_weight_head_ = nn.Sequential(
-            nn.Linear(joint_hidden, joint_hidden),
-            nn.LeakyReLU(inplace=True),
+            Residual_block(joint_hidden, dropout=dropout),
+            Residual_block(joint_hidden, dropout=dropout),
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.LeakyReLU(inplace=True),
             nn.LayerNorm(joint_hidden // 2),
-            nn.Linear(joint_hidden // 2, 1) # final sigmoid applied in forward
+            nn.Linear(joint_hidden // 2, 1),   # softplus applied in forward
         )
 
-        # Error head MLP
+        # PR error head
         self.pr_error_head_ = nn.Sequential(
-            nn.Linear(joint_hidden, joint_hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(joint_hidden, joint_hidden),
-            nn.ReLU(inplace=True),
+            Residual_block(joint_hidden, dropout=dropout),
+            Residual_block(joint_hidden, dropout=dropout),
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.ReLU(inplace=True),
-            nn.Linear(joint_hidden // 2, 1) # raw prediction, no activation
+            nn.Linear(joint_hidden // 2, 1),   # raw prediction, no activation
         )
 
-        # Weight head MLP
+        # PRR weight head
         self.prr_weight_head_ = nn.Sequential(
-            nn.Linear(joint_hidden, joint_hidden),
-            nn.LeakyReLU(inplace=True),
+            Residual_block(joint_hidden, dropout=dropout),
+            Residual_block(joint_hidden, dropout=dropout),
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.LeakyReLU(inplace=True),
             nn.LayerNorm(joint_hidden // 2),
-            nn.Linear(joint_hidden // 2, 1) # final sigmoid applied in forward
+            nn.Linear(joint_hidden // 2, 1),   # softplus applied in forward
         )
 
-        # Error head MLP
+        # PRR error head
         self.prr_error_head_ = nn.Sequential(
-            nn.Linear(joint_hidden, joint_hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(joint_hidden, joint_hidden),
-            nn.ReLU(inplace=True),
+            Residual_block(joint_hidden, dropout=dropout),
+            Residual_block(joint_hidden, dropout=dropout),
             nn.Linear(joint_hidden, joint_hidden // 2),
             nn.ReLU(inplace=True),
-            nn.Linear(joint_hidden // 2, 1) # raw prediction, no activation
+            nn.Linear(joint_hidden // 2, 1),   # raw prediction, no activation
         )
 
-    def forward(self, sats: torch.Tensor, pr_residual_matrix: torch.Tensor, prr_residual_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        sats: torch.Tensor,
+        pr_residual_matrix: torch.Tensor,
+        prr_residual_matrix: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if sats.dim() != 2:
             raise ValueError("sats must be (num_sats, feat_dim)")
 
         if self.require_standardisation:
             sats = self.standardiser_(sats)
+
         i = Gnss_multi_epoch_net.features.index("residual")
         j = Gnss_multi_epoch_net.features.index("rate_residual")
-        pr_residual_matrix = pr_residual_matrix - self.standardiser_.mean[i]
-        pr_residual_matrix = pr_residual_matrix / self.standardiser_.std[i]
-        prr_residual_matrix = prr_residual_matrix - self.standardiser_.mean[j]
-        prr_residual_matrix = prr_residual_matrix / self.standardiser_.std[j]
+        pr_residual_matrix = (pr_residual_matrix - self.standardiser_.mean[i]) / self.standardiser_.std[i]
+        prr_residual_matrix = (prr_residual_matrix - self.standardiser_.mean[j]) / self.standardiser_.std[j]
 
         per_sat_emb = self.single_sat_encoder(sats)
         lstm_emb = self.multi_sat_encoder(sats)
 
-        pr_pairwise_emb = self.pr_pairwise_attn_encoder(pr_residual_matrix)
+        pr_pairwise_emb  = self.pr_pairwise_attn_encoder(pr_residual_matrix)
         prr_pairwise_emb = self.prr_pairwise_attn_encoder(prr_residual_matrix)
 
         joint = torch.cat([per_sat_emb, lstm_emb, pr_pairwise_emb, prr_pairwise_emb], dim=1)
@@ -357,27 +391,19 @@ class Gnss_single_epoch_net(nn.Module):
         prr_weight_logits = self.prr_weight_head_(joint_feat)
         prr_sigma = F.softplus(prr_weight_logits) + 1e-3
         prr_weights = 1.0 / (prr_sigma * prr_sigma)
-        # prr_errors = self.prr_error_head_(joint_feat)
+        prr_errors = self.prr_error_head_(joint_feat)
 
-        # return pr_weights, pr_errors, prr_weights, prr_errors
-        # return pr_weights, prr_weights
-        
-        # pr_weights = torch.diag_embed(pr_weights.squeeze(1))
-        # pr_errors = pr_errors.T.squeeze(0)
-        # prr_weights = torch.diag_embed(prr_weights.squeeze(1))
-
-        # assert all weights are not equal
-        assert not torch.allclose(pr_weights, pr_weights[0]), "All PR weights are the same, model is not learning"
+        assert not torch.allclose(pr_weights, pr_weights[0]),   "All PR weights are the same, model is not learning"
         assert not torch.allclose(prr_weights, prr_weights[0]), "All PRR weights are the same, model is not learning"
 
-        
         Wx = torch.diag_embed(pr_weights.squeeze(1))
-        pr_errors = pr_errors.T.squeeze(0)
-        pr_errors = torch.clamp(pr_errors, -100, 100)
+        pr_errors = torch.clamp(pr_errors.T.squeeze(0), -100, 100)
         Wv = torch.diag_embed(prr_weights.squeeze(1))
+        prr_errors = torch.clamp(prr_errors.T.squeeze(0), -10, 10)
 
-        return Wx, pr_errors, Wv
-    
+        return Wx, pr_errors, Wv, prr_errors
+
+
 class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but can reuse code
 
     features = [
@@ -395,6 +421,10 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         'prr_stability',           # pseudorange rate stability over time
         'adr_td_residual',         # time-differenced ADR residual
         'adr_td_valid',            # whether the ADR time-differenced residual is valid
+        # 'inverse_pr_unc',          # inverse of raw pseudorange uncertainty (measurement quality)
+        # 'inverse_prr_unc',         # inverse of pseudorange rate uncertainty (measurement quality) # TODO: Remove this one
+        # 'elev_factor',             # elevation-based scaling factor for measurement uncertainty
+        # 'cn0_factor',              # signal strength-based scaling factor for measurement uncertainty
         # State indicators
         # 'code_lock',
         # 'bit_sync',
@@ -424,6 +454,10 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         True,   # prr_stability
         True,   # adr_td_residual
         False,  # adr_td_valid
+        # True,   # inverse_pr_unc
+        # True,   # inverse_prr_unc
+        # True,   # elev_factor
+        # True,   # cn0_factor
         # State indicators
         # False,  # code_lock
         # False,  # bit_sync
@@ -478,7 +512,13 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
             dropout=dropout,
         )
 
-    def forward(self, sats: torch.Tensor, lengths: torch.Tensor, pr_residual_matrix: torch.Tensor, prr_residual_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        sats: torch.Tensor,
+        lengths: torch.Tensor,
+        pr_residual_matrix: torch.Tensor,
+        prr_residual_matrix: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if sats.dim() != 3:
             raise ValueError("sats must be (num_sats, time_steps, feat_dim)")
 
@@ -490,4 +530,8 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         sats = sats_flat.view(num_sats, -1, sats.size(-1))
 
         per_sat_emb = self.temporal_sat_encoder(sats, lengths)
-        return super().forward(sats=per_sat_emb, pr_residual_matrix=pr_residual_matrix, prr_residual_matrix=prr_residual_matrix)
+        return super().forward(
+            sats=per_sat_emb,
+            pr_residual_matrix=pr_residual_matrix,
+            prr_residual_matrix=prr_residual_matrix,
+        )

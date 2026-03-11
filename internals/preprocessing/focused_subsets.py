@@ -40,15 +40,9 @@ def create_focused_subset(drive: Drive, drive_i: int, n_drives: int, hash_table:
         pos_truth, vel_truth = common.get_ground_truth(truth_df, epoch_df)
 
         pr = epoch_df[PR_COL].to_numpy()
-        prr = epoch_df[PRR_COL].to_numpy()
         sat_pos = epoch_df[SAT_POS_COLS].to_numpy()
-        sat_vel = epoch_df[SAT_VEL_COLS].to_numpy()
 
-        x = np.zeros(4, dtype=np.float64)
-        x[0:3] = pos_truth.numpy().flatten()
-        x[3] = gp.estimate_clock_bias(pos_truth.numpy().flatten(), sat_pos, pr)
-
-        residual = gp.pr_residuals(x, sat_pos, pr)
+        residual = gp.pr_residuals(pos_truth.numpy().flatten(), sat_pos, pr)
         residuals.append(residual)
         epoch_ids.append(i)
 

@@ -104,15 +104,21 @@ if __name__ == "__main__":
         os.makedirs(save_dir)
 
     setup(Gnss_multi_epoch_net, args.model_path, kf=args.kf)
-    
+
+    kf_string = "kf" if args.kf else "no_kf"
+    save_postfix = "multi_epoch"
+
+    if os.path.exists(os.path.join(save_dir, f"results_{kf_string}_{save_postfix}.txt")):
+        os.remove(os.path.join(save_dir, f"results_{kf_string}_{save_postfix}.txt"))
+
     results = []
     for drive in drive_iter:
         print(f"Evaluating file: {drive.get_directory_name()}")
         epoch_manager = Epoch_manager(10)
-        error_dict = run(drive, get_feats, save_dir, "multi_epoch")
+        error_dict = run(drive, get_feats, save_dir, save_postfix)
         results.append(error_dict)
     
-    print_global_error_all_files(results)
+    print_global_error_all_files(results, save_dir, kf_string, save_postfix)
 
     
 #     # data_iter = Data_file_iterator(base_path, split='train', prefix='2022-02-24-18-29-us-ca-lax-o')

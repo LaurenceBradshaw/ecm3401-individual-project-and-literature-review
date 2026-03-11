@@ -10,6 +10,20 @@ def get_device() -> torch.device:
     # return device_
     return "cpu" # Tried to use GPU, but only my laptop has an nvidia gpu and its slower than my main desktop cpu.
 
+def estimate_clock(epoch_df: pd.DataFrame, pos_truth: torch.Tensor, vel_truth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    # TODO: doesn't need to be torch.
+    pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float64, device=get_device())
+    prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float64, device=get_device())
+    sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float64, device=get_device())
+    sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float64, device=get_device())
+
+    pos_truth_ = torch.concat([pos_truth, torch.zeros(1, dtype=torch.float64, device=get_device())])
+    vel_truth_ = torch.concat([vel_truth, torch.zeros(1, dtype=torch.float64, device=get_device())])
+
+    clock_bias = gp.estimate_clock_bias_torch(pos_truth_, sat_pos, pr)
+    clock_drift = gp.estimate_clock_drift_torch(pos_truth_, vel_truth_, sat_pos, sat_vel, prr)
+    return clock_bias, clock_drift
+
 def get_ground_truth(truth_df: pd.DataFrame, epoch_df: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
     # Find closest ground truth row by time
     gt_row = truth_df.iloc[(truth_df['UnixTimeMillis'] - epoch_df["utcTimeMillis"].mean()).abs().argsort()[:1]]
@@ -25,28 +39,52 @@ def get_ground_truth(truth_df: pd.DataFrame, epoch_df: pd.DataFrame) -> tuple[to
     # Convert to tensors
     pos_truth = torch.tensor(pos_truth, dtype=torch.float64, device=get_device())
     vel_truth = torch.tensor(vel_truth, dtype=torch.float64, device=get_device())
+
+    clock_bias, clock_drift = estimate_clock(epoch_df, pos_truth, vel_truth)
+    pos_truth = torch.concat([pos_truth, clock_bias.unsqueeze(0)])
+    vel_truth = torch.concat([vel_truth, clock_drift.unsqueeze(0)])
     return pos_truth, vel_truth
 
-def compute_pos_torch(epoch_df: pd.DataFrame, pr_weights: torch.Tensor | None, pr_correction: torch.Tensor | None, prr_weights: torch.Tensor | None, curr_pos: dict | None) -> dict:
+def compute_pos_torch(
+        epoch_df: pd.DataFrame,
+        pr_weights: torch.Tensor | None,
+        pr_correction: torch.Tensor | None,
+        prr_weights: torch.Tensor | None,
+        prr_correction: torch.Tensor | None,
+        curr_pos: dict | None
+    ) -> dict:
     # Grab the required columns and convert to tensors
     pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float64, device=get_device())
     if pr_correction is not None:
         pr = pr + pr_correction
-        
+
     prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float64, device=get_device())
+    if prr_correction is not None:
+        prr = prr + prr_correction
+        
     sat_pos = torch.tensor(epoch_df[SAT_POS_COLS].to_numpy(), dtype=torch.float64, device=get_device())
     sat_vel = torch.tensor(epoch_df[SAT_VEL_COLS].to_numpy(), dtype=torch.float64, device=get_device())
     # Compute updated position estimate
     curr_pos = gp.position_torch(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
     return curr_pos
 
-def compute_pos(epoch_df: pd.DataFrame, pr_weights: np.ndarray | None, pr_correction: np.ndarray | None, prr_weights: np.ndarray | None, curr_pos: dict | None) -> dict:
+def compute_pos(
+        epoch_df: pd.DataFrame, 
+        pr_weights: np.ndarray | None, 
+        pr_correction: np.ndarray | None, 
+        prr_weights: np.ndarray | None, 
+        prr_correction: np.ndarray | None, 
+        curr_pos: dict | None
+    ) -> dict:
     # Extract columns once, no torch, no devices
     pr = epoch_df[PR_COL].to_numpy(dtype=np.float64)
     if pr_correction is not None:
         pr = pr + pr_correction
 
     prr = epoch_df[PRR_COL].to_numpy(dtype=np.float64)
+    if prr_correction is not None:
+        prr = prr + prr_correction
+
     sat_pos = epoch_df[SAT_POS_COLS].to_numpy(dtype=np.float64)
     sat_vel = epoch_df[SAT_VEL_COLS].to_numpy(dtype=np.float64)
 
@@ -82,7 +120,7 @@ def compute_residual_matrix(epoch_df: pd.DataFrame) -> tuple[np.ndarray, np.ndar
         included_mask = [key != excluded_key for key in sat_keys]
         included_sats = epoch_df[included_mask]
 
-        curr_pos = compute_pos(included_sats, None, None, None, curr_pos=None)
+        curr_pos = compute_pos(included_sats, None, None, None, None, curr_pos=None)
 
         pr = included_sats[PR_COL].to_numpy()
         prr = included_sats[PRR_COL].to_numpy()
