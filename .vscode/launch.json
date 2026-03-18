@@ -74,7 +74,7 @@
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./multi_epoch_network.pt",
                 "-o", "./multi_epoch_evaluation",
-                "--kf"
+                "--kf",
             ] 
         },
         {

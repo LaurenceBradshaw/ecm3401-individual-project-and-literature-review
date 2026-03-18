@@ -169,6 +169,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
 
     baseline_pos = curr_pos.copy()
 
+    prev_epoch_id = None
     i = 0
     for epoch_id, epoch_df in df.groupby("epoch_id"):
         print(f"Processing GNSS epoch {epoch_id+1} / {N}")
@@ -197,12 +198,16 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
 
         sigma_elev_pr = (3 / epoch_df['sin_elevation'])**2
         sigma_cn0_pr = 5 * np.exp(-epoch_df['Cn0DbHz']/20)
-        pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr)
+        pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr + 1e-6)
+        pr_weights_baseline *= 10
         sigma_elev_prr = (0.1 / epoch_df['sin_elevation'])**2
         sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
-        prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr)
+        prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr + 1e-6)
         Wx_baseline = torch.diag(torch.tensor(pr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
         Wv_baseline = torch.diag(torch.tensor(prr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
+
+        if epoch_id == 826:
+            print()
 
         baseline_pos = common.compute_pos_torch(epoch_df=epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, prr_correction=None, curr_pos=baseline_pos)
 
@@ -210,8 +215,11 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
         curr_pos = common.compute_pos_torch(epoch_df=epoch_df, pr_weights=Wx, pr_correction=pr_errors, prr_weights=Wv, prr_correction=prr_errors, curr_pos=curr_pos)
 
         if kf_enabled:
-            prev_epoch_df = df[df['epoch_id'] == epoch_id - 1]
-            dt = (epoch_df['utcTimeMillis'].mean() - prev_epoch_df['utcTimeMillis'].mean()) / 1000.0
+            if prev_epoch_id is None:
+                dt = 1.0
+            else:
+                prev_epoch_df = df[df['epoch_id'] == prev_epoch_id]
+                dt = (epoch_df['utcTimeMillis'].mean() - prev_epoch_df['utcTimeMillis'].mean()) / 1000.0
             sat_count = epoch_df.shape[0]
             model_speed = torch.linalg.norm(curr_pos["velocity"]).item()
             kf.predict(dt, model_speed)
@@ -303,6 +311,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
             sat_trajectories[key].append((sv_lat, sv_lon))
 
         i += 1
+        prev_epoch_id = epoch_id
 
     err_horizontal, err_vertical, err_3d = errors_haversine(estimated_positions_lla, truth_positions_lla)
     err_horizontal_baseline, err_vertical_baseline, err_3d_baseline = errors_haversine(estimated_positions_baseline_lla, truth_positions_lla)
@@ -462,7 +471,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     plt.xlabel('Position Error (m)')
     plt.ylabel('CDF')
     plt.grid(True)
-    plt.legend()
+    plt.legend(loc="lower right")
     plt.savefig(cdf_save_name)
     plt.close()
 

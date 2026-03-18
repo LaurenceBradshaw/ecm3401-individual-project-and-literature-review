@@ -53,7 +53,7 @@ if __name__ == "__main__":
     
     test_drives = get_test_drives(base_path)
     if args.drive:
-        drive_paths = [os.path.join(base_path, args.drive)]
+        test_drives = [os.path.join(base_path, args.drive)]
     
     drive_iter = Drive_iterator(
         drive_paths=test_drives,

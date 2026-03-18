@@ -202,28 +202,15 @@ class Gnss_single_epoch_net(nn.Module):
         'residual',                # pseudorange residual (from WLS)
         'rate_residual',           # pseudorange rate residual (from WLS)
         'doppler_residual',        # doppler residual. estimated by doppler shift
-        # 'cn0_over_sine',
         'cn0_stability',           # signal strength stability over time
         'pr_stability',            # pseudorange stability over time
         'prr_stability',           # pseudorange rate stability over time
         'adr_td_residual',         # time-differenced ADR residual. estimated from the change in ADR between epochs compared to prr
         'adr_td_valid',            # whether the ADR time-differenced residual is valid
-        # 'inverse_pr_unc',          # inverse of raw pseudorange uncertainty (measurement quality)
-        # 'inverse_prr_unc',         # inverse of pseudorange rate uncertainty (measurement quality)
-        # 'elev_factor',             # elevation-based scaling factor for measurement uncertainty
-        # 'cn0_factor',              # signal strength-based scaling factor for measurement uncertainty
-        # State indicators
-        # 'code_lock',
-        # 'bit_sync',
-        # 'frame_sync',
-        # 'time_decoded',
-        # 'ambiguity_resolved',
         # ADR state indicators
         'valid',
         'reset',
         'cycle_slip',
-        # 'half_cycle_resolved',
-        # 'half_cycle_reported',
     ]
 
     _feature_standardise_map = torch.tensor([
@@ -235,28 +222,15 @@ class Gnss_single_epoch_net(nn.Module):
         True,   # residual
         True,   # rate_residual
         True,   # doppler_residual
-        # True,   # cn0_over_sine
         True,   # cn0_stability
         True,   # pr_stability
         True,   # prr_stability
         True,   # adr_td_residual
         False,  # adr_td_valid
-        # True,   # inverse_pr_unc
-        # True,   # inverse_prr_unc
-        # True,   # elev_factor
-        # True,   # cn0_factor
-        # State indicators
-        # False,  # code_lock
-        # False,  # bit_sync
-        # False,  # frame_sync
-        # False,  # time_decoded
-        # False,  # ambiguity_resolved
         # ADR state indicators
         False,  # valid
         False,  # reset
         False,  # cycle_slip
-        # False,  # half_cycle_resolved
-        # False,  # half_cycle_reported
     ], dtype=torch.bool)
     
     """
@@ -369,8 +343,8 @@ class Gnss_single_epoch_net(nn.Module):
         if self.require_standardisation:
             sats = self.standardiser_(sats)
 
-        i = Gnss_multi_epoch_net.features.index("residual")
-        j = Gnss_multi_epoch_net.features.index("rate_residual")
+        i = Gnss_single_epoch_net.features.index("residual")
+        j = Gnss_single_epoch_net.features.index("rate_residual")
         pr_residual_matrix = (pr_residual_matrix - self.standardiser_.mean[i]) / self.standardiser_.std[i]
         prr_residual_matrix = (prr_residual_matrix - self.standardiser_.mean[j]) / self.standardiser_.std[j]
 
@@ -415,28 +389,15 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         'residual',                # pseudorange residual (from WLS)
         'rate_residual',
         'doppler_residual',
-        # 'cn0_over_sine',
         'cn0_stability',           # signal strength stability over time
         'pr_stability',            # pseudorange stability over time
         'prr_stability',           # pseudorange rate stability over time
         'adr_td_residual',         # time-differenced ADR residual
         'adr_td_valid',            # whether the ADR time-differenced residual is valid
-        # 'inverse_pr_unc',          # inverse of raw pseudorange uncertainty (measurement quality)
-        # 'inverse_prr_unc',         # inverse of pseudorange rate uncertainty (measurement quality) # TODO: Remove this one
-        # 'elev_factor',             # elevation-based scaling factor for measurement uncertainty
-        # 'cn0_factor',              # signal strength-based scaling factor for measurement uncertainty
-        # State indicators
-        # 'code_lock',
-        # 'bit_sync',
-        # 'frame_sync',
-        # 'time_decoded',
-        # 'ambiguity_resolved',
         # ADR state indicators
         'valid',
         'reset',
         'cycle_slip',
-        # 'half_cycle_resolved',
-        # 'half_cycle_reported',
     ]
 
     _feature_standardise_map = torch.tensor([
@@ -448,28 +409,15 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         True,   # residual
         True,   # rate_residual
         True,   # doppler_residual
-        # True,   # cn0_over_sine
         True,   # cn0_stability
         True,   # pr_stability
         True,   # prr_stability
         True,   # adr_td_residual
         False,  # adr_td_valid
-        # True,   # inverse_pr_unc
-        # True,   # inverse_prr_unc
-        # True,   # elev_factor
-        # True,   # cn0_factor
-        # State indicators
-        # False,  # code_lock
-        # False,  # bit_sync
-        # False,  # frame_sync
-        # False,  # time_decoded
-        # False,  # ambiguity_resolved
         # ADR state indicators
         False,  # valid
         False,  # reset
         False,  # cycle_slip
-        # False,  # half_cycle_resolved
-        # False,  # half_cycle_reported
     ], dtype=torch.bool)
 
     """
