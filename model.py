@@ -20,6 +20,8 @@ def get_test_drives(base_path: str) -> list[str]:
     return test_drives
 
 def get_training_drives(base_path: str) -> list[str]:
+    test_drives = set(get_test_drives(base_path))
+    test_drives_no_phone = set(os.path.dirname(d) for d in test_drives)
     all_drives = [
         os.path.join(base_path, d, p)
         for d in os.listdir(base_path)
@@ -27,8 +29,9 @@ def get_training_drives(base_path: str) -> list[str]:
         for p in os.listdir(os.path.join(base_path, d))
         if os.path.isdir(os.path.join(base_path, d, p))
     ]
-    test_drives = set(get_test_drives(base_path))
-    training_drives = [d for d in all_drives if d not in test_drives]
+    # Ensure no drive from the same directory as a test drive is included in training drives, to prevent data leakage
+    # since the phones in the same directory have been on the same routes and have the same satellite visibility patterns.
+    training_drives = [d for d in all_drives if os.path.dirname(d) not in test_drives_no_phone]
 
     return training_drives
 
@@ -54,7 +57,7 @@ class Residual_block(nn.Module):
         super().__init__()
         self.block_ = nn.Sequential(
             nn.Linear(dim, dim),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Dropout(p=dropout),
             nn.Linear(dim, dim),
         )
@@ -73,10 +76,10 @@ class Single_sat_encoder(nn.Module):
         super().__init__()
         self.net_ = nn.Sequential(
             nn.Linear(feat_dim, hidden_dim),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Dropout(p=dropout),
             nn.Linear(hidden_dim, emb_dim),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
         )
         # Project input to emb_dim for the residual if dims differ
         self.residual_proj_ = (
@@ -131,7 +134,7 @@ class Temporal_sat_encoder(nn.Module):
 
         self.proj_ = nn.Sequential(
             nn.Linear(lstm_hidden, emb_dim),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Dropout(p=dropout),
         )
 
@@ -288,7 +291,7 @@ class Gnss_single_epoch_net(nn.Module):
 
         self.joint_mlp_ = nn.Sequential(
             nn.Linear(joint_input_dim, joint_hidden),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
         )
 
         # PR weight head
@@ -308,7 +311,7 @@ class Gnss_single_epoch_net(nn.Module):
             Residual_block(joint_hidden, dropout=dropout),
             Residual_block(joint_hidden, dropout=dropout),
             nn.Linear(joint_hidden, joint_hidden // 2),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Linear(joint_hidden // 2, 1),   # raw prediction, no activation
         )
 
@@ -327,7 +330,7 @@ class Gnss_single_epoch_net(nn.Module):
             Residual_block(joint_hidden, dropout=dropout),
             Residual_block(joint_hidden, dropout=dropout),
             nn.Linear(joint_hidden, joint_hidden // 2),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Linear(joint_hidden // 2, 1),   # raw prediction, no activation
         )
 
@@ -360,11 +363,13 @@ class Gnss_single_epoch_net(nn.Module):
         pr_weight_logits = self.pr_weight_head_(joint_feat)
         pr_sigma = F.softplus(pr_weight_logits) + 1e-3
         pr_weights = 1.0 / (pr_sigma * pr_sigma)
+        pr_weights = pr_weights / pr_weights.mean()
         pr_errors = self.pr_error_head_(joint_feat)
 
         prr_weight_logits = self.prr_weight_head_(joint_feat)
         prr_sigma = F.softplus(prr_weight_logits) + 1e-3
         prr_weights = 1.0 / (prr_sigma * prr_sigma)
+        prr_weights = prr_weights / prr_weights.mean()
         prr_errors = self.prr_error_head_(joint_feat)
 
         assert not torch.allclose(pr_weights, pr_weights[0]),   "All PR weights are the same, model is not learning"
@@ -429,7 +434,6 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         feat_dim: int,
         mean: torch.Tensor,
         std: torch.Tensor,
-        temporal_emb_dim: int = 256,
         per_sat_lstm_hidden: int = 256,
         per_sat_lstm_layers: int = 1,
         per_sat_emb_dim: int = 256,
@@ -439,7 +443,7 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         dropout: float = 0.1,
     ):
         super(Gnss_multi_epoch_net, self).__init__(
-            feat_dim=temporal_emb_dim,
+            feat_dim=per_sat_emb_dim,
             mean=mean,
             std=std,
             per_sat_hidden=per_sat_lstm_hidden,
@@ -460,6 +464,12 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
             dropout=dropout,
         )
 
+        self.current_feat_proj_ = nn.Sequential(
+            nn.Linear(per_sat_emb_dim + feat_dim, per_sat_emb_dim),
+            nn.LeakyReLU(inplace=True),
+            nn.LayerNorm(per_sat_emb_dim),
+        )
+
     def forward(
         self,
         sats: torch.Tensor,
@@ -477,7 +487,16 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         sats_flat = self.standardiser_(sats_flat)
         sats = sats_flat.view(num_sats, -1, sats.size(-1))
 
+        # Current epoch features (last timestep) - these must not get lost in the LSTM
+        current_feats = sats[:, -1, :]
+
         per_sat_emb = self.temporal_sat_encoder(sats, lengths)
+
+        # Concatenate current epoch features directly so instantaneous signals
+        # like elevation cannot be overridden by historical LSTM representation
+        per_sat_emb = torch.cat([per_sat_emb, current_feats], dim=1)
+        per_sat_emb = self.current_feat_proj_(per_sat_emb)
+
         return super().forward(
             sats=per_sat_emb,
             pr_residual_matrix=pr_residual_matrix,

@@ -38,8 +38,8 @@ def setup(base_path: str, network_cls: torch.nn.Module, compute_baseline: bool) 
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
-        step_size=5,
-        gamma=0.05
+        step_size=1,
+        gamma=0.5
     )
 
 def step_scheduler():
@@ -110,6 +110,7 @@ def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path
         # otherwise would need to pad inputs and handle masks
         (combined_loss / 20).backward()
         if epoch_id % 20 == 0 or epoch_id == df['epoch_id'].unique().max():
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
             optimizer.step()
             optimizer.zero_grad()
 

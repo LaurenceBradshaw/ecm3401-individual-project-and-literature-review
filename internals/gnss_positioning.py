@@ -758,21 +758,23 @@ def estimate_clock_drift_torch(
 
     return delta_clock_drift_mps
 
+
 class Kalman_filter:
     def __init__(
         self,
         # Process noise
-        sigma_acc = 2.0,      # m/s2 - acceleration noise
-        sigma_b = 30.0,       # m - clock bias process noise
-        sigma_d = 0.5,        # m/s - clock drift process noise
-        # Measurement noise (depends on the measurement source quality)
-        sigma_p = 10.0,        # m - position measurement noise
-        sigma_v = 0.5,        # m/s - velocity measurement noise
+        sigma_acc = 2.0,       # m/s^2 - acceleration noise
+        sigma_b = 30.0,        # m - clock bias process noise
+        sigma_d = 0.5,         # m/s - clock drift process noise
+        # Measurement noise
+        sigma_p_h = 10.0,      # m - horizontal position measurement noise
+        sigma_p_v = 25.0,      # m - vertical position measurement noise (larger, GNSS geometry is worse vertically)
+        sigma_v = 0.5,         # m/s - velocity measurement noise
         # Initial uncertainty
-        sigma_p0 = 50.0,      # m - initial position uncertainty
-        sigma_v0 = 10.0,       # m/s - initial velocity uncertainty  
-        sigma_b0 = 200.0,     # m - initial clock bias uncertainty (~100m equivalent)
-        sigma_d0 = 2.0,       # m/s - initial clock drift uncertainty
+        sigma_p0 = 50.0,       # m - initial position uncertainty
+        sigma_v0 = 10.0,       # m/s - initial velocity uncertainty
+        sigma_b0 = 200.0,      # m - initial clock bias uncertainty
+        sigma_d0 = 2.0,        # m/s - initial clock drift uncertainty
         # Adaptive parameters
         min_speed_threshold = 0.5,  # m/s - detect stationary
         max_speed = 50.0,           # m/s (~180 km/h) - upper limit for cars
@@ -784,135 +786,163 @@ class Kalman_filter:
         self.sigma_acc_ = sigma_acc
         self.sigma_b_ = sigma_b
         self.sigma_d_ = sigma_d
-
+        self.sigma_p_h_ = sigma_p_h
+        self.sigma_p_v_ = sigma_p_v
+ 
         # State transition F (8x8)
         self.F_ = np.eye(8)
-
+ 
         # Observation H (8x8) - measuring state directly
         self.H_ = np.eye(8)
-
+ 
         # Process noise Q (8x8)
         self.Q_ = np.zeros((8, 8))
-
+ 
         # Measurement noise R (8x8)
+        # Position block (0:3, 0:3) is built fresh each update() call via
+        # _enu_noise_to_ecef, so only velocity and clock terms are set here
         self.R_ = np.zeros((8, 8))
         for i in range(3):
-            self.R_[i, i] = sigma_p * sigma_p
             self.R_[i + 3, i + 3] = sigma_v * sigma_v
-
         self.R_[6, 6] = sigma_b * sigma_b
         self.R_[7, 7] = sigma_d * sigma_d
-
+ 
         # Initial state
         self.x_ = np.zeros((8, 1))
-
+ 
         # Initial covariance P (8x8)
         self.P_ = np.zeros((8, 8))
         for i in range(3):
             self.P_[i, i] = sigma_p0 * sigma_p0
             self.P_[i + 3, i + 3] = sigma_v0 * sigma_v0
-
         self.P_[6, 6] = sigma_b0 * sigma_b0
         self.P_[7, 7] = sigma_d0 * sigma_d0
-
+ 
+    def _enu_noise_to_ecef(self, sigma_h: float, sigma_v: float, ecef_pos: np.ndarray) -> np.ndarray:
+        # Rotation matrix from ENU to ECEF at this position
+        R_enu_to_ecef = coords.enu_to_ecef_rot(ecef_pos)
+ 
+        # Diagonal covariance in ENU: East, North, Up
+        cov_enu = np.diag([sigma_h**2, sigma_h**2, sigma_v**2])
+ 
+        # Rotate to ECEF: cov_ecef = R * cov_enu * R^T
+        return R_enu_to_ecef @ cov_enu @ R_enu_to_ecef.T
+ 
     def initialise(self, pos, vel, clock_bias, clock_drift):
         self.x_[0:3, 0] = pos
         self.x_[3:6, 0] = vel
         self.x_[6, 0] = clock_bias
         self.x_[7, 0] = clock_drift
+        self.stationary_count_ = 0
         self.initialised_ = True
-
+ 
     def predict(self, dt, current_speed=None):
         if not self.initialised_:
             return
-
+ 
         I3 = np.eye(3)
-        
+ 
         self.F_.fill(0)
         np.fill_diagonal(self.F_, 1.0)
-        self.F_[0:3, 3:6] = dt * I3 # position depends on velocity
-        self.F_[6, 7] = dt          # clock bias depends on drift
-
+        self.F_[0:3, 3:6] = dt * I3  # position depends on velocity
+        self.F_[6, 7] = dt            # clock bias depends on drift
+ 
         q11 = (dt**4) / 4.0 * I3
         q12 = (dt**3) / 2.0 * I3
         q22 = (dt**2) * I3
-
+ 
         self.Q_.fill(0)
         self.Q_[0:3, 0:3] = q11
         self.Q_[0:3, 3:6] = q12
         self.Q_[3:6, 0:3] = q12
         self.Q_[3:6, 3:6] = q22
-        self.Q_[6, 6] = self.sigma_b_ * self.sigma_b_
-        self.Q_[7, 7] = self.sigma_d_ * self.sigma_d_
-
         self.Q_[0:6, 0:6] *= (self.sigma_acc_ * self.sigma_acc_)
-
-        # Adapt process noise based on speed
+ 
+        self.Q_[6, 6] = self.sigma_b_ * self.sigma_b_ * dt
+        self.Q_[7, 7] = self.sigma_d_ * self.sigma_d_ * dt
+ 
         Q = self.Q_.copy()
-        
+ 
         if current_speed is not None:
             if current_speed < self.min_speed_threshold_:
-                # Stationary: reduce position noise significantly
                 self.stationary_count_ += 1
                 if self.stationary_count_ > 3:  # ~3 seconds stopped
-                    Q[0:6, 0:6] *= 0.1  # Much lower noise when stopped
+                    Q[0:6, 0:6] *= 0.1
             else:
                 self.stationary_count_ = 0
-                # Higher speeds = more uncertainty
-                speed_factor = min(current_speed / 20.0, 2.0)  # Cap at 2x
+                speed_factor = min(current_speed / 20.0, 2.0)
                 Q[0:6, 0:6] *= speed_factor
-
+ 
         self.x_ = self.F_.dot(self.x_)
         self.P_ = self.F_.dot(self.P_).dot(self.F_.T) + Q
-
-    def update(self, pos, vel, clock_bias, clock_drift, 
-               hdop=None, satellite_count=None, speed=None):
+ 
+    def update(
+        self,
+        pos,
+        vel,
+        clock_bias,
+        clock_drift,
+        hdop=None,
+        vdop=None,
+        satellite_count=None,
+        speed=None,
+    ):
         if not self.initialised_:
             self.initialise(pos, vel, clock_bias, clock_drift)
             return
-
-        # Quality gating for phone GNSS
-        R = self.R_.copy()
-        
-        if hdop is not None:
-            # HDOP (horizontal dilution of precision) - lower is better
-            # Inflate measurement noise based on HDOP
-            hdop_factor = max(hdop / 2.0, 1.0)**2  # Baseline HDOP=2
-            R[0:3, 0:3] *= hdop_factor
-        
-        if satellite_count is not None and satellite_count < 6:
-            # Poor satellite visibility - increase position uncertainty
-            R[0:3, 0:3] *= 2.0
-        
+ 
         # Velocity constraint for cars
         if speed is not None and speed > self.max_speed_:
-            # Reject unrealistic velocities (common with phone GNSS)
             return
-
+ 
+        R = self.R_.copy()
+ 
+        # Compute sigma values before rotation, applying DOP and satellite count scaling
+        sigma_h = self.sigma_p_h_
+        sigma_v = self.sigma_p_v_
+ 
+        if hdop is not None:
+            sigma_h *= max(hdop / 2.0, 1.0)  # baseline HDOP=2
+ 
+        if vdop is not None:
+            sigma_v *= max(vdop / 2.0, 1.0)  # baseline VDOP=2
+ 
+        if satellite_count is not None and satellite_count < 6:
+            # Inflate variance by 2x, so sigma by sqrt(2)
+            sigma_h *= np.sqrt(2.0)
+            sigma_v *= np.sqrt(2.0)
+ 
+        # Build position covariance in ENU and rotate to ECEF so that
+        # horizontal/vertical noise is correctly oriented at this location
+        R[0:3, 0:3] = self._enu_noise_to_ecef(sigma_h, sigma_v, pos)
+ 
         z = np.zeros((8, 1))
         z[0:3, 0] = pos
         z[3:6, 0] = vel
         z[6, 0] = clock_bias
         z[7, 0] = clock_drift
-
+ 
         y = z - self.H_.dot(self.x_)
-
+ 
         S = self.H_.dot(self.P_).dot(self.H_.T) + R
-        K = self.P_.dot(self.H_.T).dot(np.linalg.inv(S))
-
+ 
+        K = np.linalg.solve(S.T, self.H_.dot(self.P_).T).T
+ 
         self.x_ = self.x_ + K.dot(y)
+ 
         I = np.eye(8)
-        self.P_ = (I - K.dot(self.H_)).dot(self.P_)
-
+        I_KH = I - K.dot(self.H_)
+        self.P_ = I_KH.dot(self.P_).dot(I_KH.T) + K.dot(R).dot(K.T)
+ 
     def get_position(self):
         return self.x_[0:3, 0].copy()
-
+ 
     def get_velocity(self):
         return self.x_[3:6, 0].copy()
-
+ 
     def get_clock_bias(self):
         return float(self.x_[6, 0])
-
+ 
     def get_clock_drift(self):
         return float(self.x_[7, 0])
     

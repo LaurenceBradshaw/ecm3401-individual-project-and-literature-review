@@ -271,20 +271,16 @@ def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch
 
     cn0_diff = np.diff(epoch_window['cn0'], prepend=0)
     cn0_std = np.std(cn0_diff)
-    cn0_stability = 1 / max(cn0_std, 1e-3) # avoid div by zero
+    cn0_stability = 1.0 / cn0_std if cn0_std > 1e-3 else 0.0
     df.loc[sat_id, 'cn0_stability'] = cn0_stability
 
     pr_std = np.std(epoch_window['pr'])
-    pr_stability = 1 / max(pr_std, 1e-3)
+    pr_stability = 1.0 / pr_std if pr_std > 1e-3 else 0.0
     df.loc[sat_id, 'pr_stability'] = pr_stability
-    prr_std = np.std(epoch_window['prr'])
-    prr_stability = 1 / max(prr_std, 1e-3)
-    df.loc[sat_id, 'prr_stability'] = prr_stability
 
-    carrier_avg = np.mean(epoch_window['adr'])
-    code_carrier_div = pr - carrier_avg
-    cc_div_std = np.std(code_carrier_div)
-    df.loc[sat_id, 'code_carrier_div_std'] = cc_div_std
+    prr_std = np.std(epoch_window['prr'])
+    prr_stability = 1.0 / prr_std if prr_std > 1e-3 else 0.0
+    df.loc[sat_id, 'prr_stability'] = prr_stability
 
 def compute_prr_baseline_weight(sat_samples: dict, row: pd.Series) -> float:
     sat_key = (row['ConstellationType'], row['Svid'])
@@ -386,6 +382,7 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
     df["epoch_id"] = df.groupby('utcTimeMillis').ngroup()
     # Filter to L1 frequency band only. L5 is a pain
     df = df[(df['CarrierFrequencyHz'] >= L1_MIN) & (df['CarrierFrequencyHz'] <= L1_MAX)]
+    df = df[df['SvElevationDegrees'] > 0.0] # Remove satellites below the horizon.
     # Drop rows with missing critical data
     df = df.dropna(subset=[
         'RawPseudorangeMeters',
@@ -491,11 +488,11 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
         # Baseline weights
         sigma_elev_pr = (3 / epoch_df['sin_elevation'])**2
         sigma_cn0_pr = 5 * np.exp(-epoch_df['Cn0DbHz']/20)
-        pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr)
+        pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr + 1e-6)
         df.loc[epoch_df.index, 'pr_baseline_weight'] = pr_weights_baseline
         sigma_elev_prr = (0.1 / epoch_df['sin_elevation'])**2
         sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
-        prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr)
+        prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr + 1e-6)
         df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
         # pr_weights_baseline = 1 / ((1/epoch_df['sin_elevation'])**2 + (4*10**(-epoch_df['Cn0DbHz']/30))**2)
         # prr_weights_baseline = np.zeros(len(epoch_df))

@@ -18,6 +18,7 @@ class Drive:
 
         self.device_gnss_df_ = None
         self.ground_truth_df_ = None
+        self._load_files()
 
     def _load_files(self) -> None:
         if self.preprocessed_:
@@ -47,7 +48,6 @@ class Drive:
         return os.path.normpath(self.drive_path_)
 
     def get_dataframes(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        self._load_files()
         return self.device_gnss_df_, self.ground_truth_df_
 
 

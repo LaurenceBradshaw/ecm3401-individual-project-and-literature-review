@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 import folium
 import os
+import pandas as pd
 from pathlib import Path
 from internals.drive_data import Drive
 from internals.coord_systems import ecef_to_lla, errors_haversine, ecef_to_enu_rot
@@ -41,7 +42,9 @@ def compute_position_error_cdf(baseline_positions, nn_positions, truth_positions
 def print_global_error_all_files(results: list, save_dir: str, kf_string: str, save_postfix: str) -> None:
     total = {}
 
-    for key in results[0].keys():
+    for key in ["horizontal_sse", "vertical_sse", "3d_sse", "horizontal_baseline_sse", "vertical_baseline_sse", "3d_baseline_sse", 
+                "velocity_horizontal_sse", "velocity_vertical_sse", "velocity_3d_sse", "velocity_horizontal_baseline_sse", "velocity_vertical_baseline_sse", "velocity_3d_baseline_sse", 
+                "speed_sse", "speed_baseline_sse", "count", "speed_count"]:
         total[key] = sum(r[key] for r in results)
 
     horizontal_rmse = np.sqrt(total["horizontal_sse"] / total["count"])
@@ -62,6 +65,64 @@ def print_global_error_all_files(results: list, save_dir: str, kf_string: str, s
 
     speed_rmse = np.sqrt(total["speed_sse"] / total["speed_count"])
     speed_baseline_rmse = np.sqrt(total["speed_baseline_sse"] / total["speed_count"])
+
+    all_pos_horizontal_errors = np.concatenate([r["pos_horizontal_errors"] for r in results])
+    all_pos_vertical_errors = np.concatenate([r["pos_vertical_errors"] for r in results])
+    all_pos_3d_errors = np.concatenate([r["pos_3d_errors"] for r in results])
+    all_pos_horizontal_baseline_errors = np.concatenate([r["pos_horizontal_baseline_errors"] for r in results])
+    all_pos_vertical_baseline_errors = np.concatenate([r["pos_vertical_baseline_errors"] for r in results])
+    all_pos_3d_baseline_errors = np.concatenate([r["pos_3d_baseline_errors"] for r in results])
+    all_vel_horizontal_errors = np.concatenate([r["vel_horizontal_errors"] for r in results])
+    all_vel_vertical_errors = np.concatenate([r["vel_vertical_errors"] for r in results])
+    all_vel_3d_errors = np.concatenate([r["vel_3d_errors"] for r in results])
+    all_vel_horizontal_baseline_errors = np.concatenate([r["vel_horizontal_baseline_errors"] for r in results])
+    all_vel_vertical_baseline_errors = np.concatenate([r["vel_vertical_baseline_errors"] for r in results])
+    all_vel_3d_baseline_errors = np.concatenate([r["vel_3d_baseline_errors"] for r in results])
+    all_speed_errors = np.concatenate([r["speed_errors"] for r in results])
+    all_speed_baseline_errors = np.concatenate([r["speed_baseline_errors"] for r in results])
+
+    pos_horizontal_p50 = np.percentile(all_pos_horizontal_errors, 50)
+    pos_horizontal_p75 = np.percentile(all_pos_horizontal_errors, 75)
+    pos_horizontal_p95 = np.percentile(all_pos_horizontal_errors, 95)
+    pos_vertical_p50 = np.percentile(all_pos_vertical_errors, 50)
+    pos_vertical_p75 = np.percentile(all_pos_vertical_errors, 75)
+    pos_vertical_p95 = np.percentile(all_pos_vertical_errors, 95)
+    pos_3d_p50 = np.percentile(all_pos_3d_errors, 50)
+    pos_3d_p75 = np.percentile(all_pos_3d_errors, 75)
+    pos_3d_p95 = np.percentile(all_pos_3d_errors, 95)
+    pos_horizontal_baseline_p50 = np.percentile(all_pos_horizontal_baseline_errors, 50)
+    pos_horizontal_baseline_p75 = np.percentile(all_pos_horizontal_baseline_errors, 75)
+    pos_horizontal_baseline_p95 = np.percentile(all_pos_horizontal_baseline_errors, 95)
+    pos_vertical_baseline_p50 = np.percentile(all_pos_vertical_baseline_errors, 50)
+    pos_vertical_baseline_p75 = np.percentile(all_pos_vertical_baseline_errors, 75)
+    pos_vertical_baseline_p95 = np.percentile(all_pos_vertical_baseline_errors, 95)
+    pos_3d_baseline_p50 = np.percentile(all_pos_3d_baseline_errors, 50)
+    pos_3d_baseline_p75 = np.percentile(all_pos_3d_baseline_errors, 75)
+    pos_3d_baseline_p95 = np.percentile(all_pos_3d_baseline_errors, 95)
+    vel_horizontal_p50 = np.percentile(all_vel_horizontal_errors, 50)
+    vel_horizontal_p75 = np.percentile(all_vel_horizontal_errors, 75)
+    vel_horizontal_p95 = np.percentile(all_vel_horizontal_errors, 95)
+    vel_vertical_p50 = np.percentile(all_vel_vertical_errors, 50)
+    vel_vertical_p75 = np.percentile(all_vel_vertical_errors, 75)
+    vel_vertical_p95 = np.percentile(all_vel_vertical_errors, 95)
+    vel_3d_p50 = np.percentile(all_vel_3d_errors, 50)
+    vel_3d_p75 = np.percentile(all_vel_3d_errors, 75)
+    vel_3d_p95 = np.percentile(all_vel_3d_errors, 95)
+    vel_horizontal_baseline_p50 = np.percentile(all_vel_horizontal_baseline_errors, 50)
+    vel_horizontal_baseline_p75 = np.percentile(all_vel_horizontal_baseline_errors, 75)
+    vel_horizontal_baseline_p95 = np.percentile(all_vel_horizontal_baseline_errors, 95)
+    vel_vertical_baseline_p50 = np.percentile(all_vel_vertical_baseline_errors, 50)
+    vel_vertical_baseline_p75 = np.percentile(all_vel_vertical_baseline_errors, 75)
+    vel_vertical_baseline_p95 = np.percentile(all_vel_vertical_baseline_errors, 95)
+    vel_3d_baseline_p50 = np.percentile(all_vel_3d_baseline_errors, 50)
+    vel_3d_baseline_p75 = np.percentile(all_vel_3d_baseline_errors, 75)
+    vel_3d_baseline_p95 = np.percentile(all_vel_3d_baseline_errors, 95)
+    speed_p50 = np.percentile(all_speed_errors, 50)
+    speed_p75 = np.percentile(all_speed_errors, 75)
+    speed_p95 = np.percentile(all_speed_errors, 95)
+    speed_baseline_p50 = np.percentile(all_speed_baseline_errors, 50)
+    speed_baseline_p75 = np.percentile(all_speed_baseline_errors, 75)
+    speed_baseline_p95 = np.percentile(all_speed_baseline_errors, 95)
 
     print(
     f"\n=== GLOBAL RESULTS ACROSS {len(results)} FILES ==="
@@ -109,6 +170,47 @@ def print_global_error_all_files(results: list, save_dir: str, kf_string: str, s
         f"improvement {(speed_baseline_rmse - speed_rmse)/speed_baseline_rmse*100:.2f} %)"
     )
 
+    print(
+        f"Position P50/P75/P95 (horizontal): {pos_horizontal_p50:.2f} / {pos_horizontal_p75:.2f} / {pos_horizontal_p95:.2f} m "
+        f"(baseline {pos_horizontal_baseline_p50:.2f} / {pos_horizontal_baseline_p75:.2f} / {pos_horizontal_baseline_p95:.2f} m, "
+        f"improvement {(pos_horizontal_baseline_p95 - pos_horizontal_p95)/pos_horizontal_baseline_p95*100:.2f} % at P95)"
+    )
+
+    print(
+        f"Position P50/P75/P95 (vertical): {pos_vertical_p50:.2f} / {pos_vertical_p75:.2f} / {pos_vertical_p95:.2f} m "
+        f"(baseline {pos_vertical_baseline_p50:.2f} / {pos_vertical_baseline_p75:.2f} / {pos_vertical_baseline_p95:.2f} m, "
+        f"improvement {(pos_vertical_baseline_p95 - pos_vertical_p95)/pos_vertical_baseline_p95*100:.2f} % at P95)"
+    )
+
+    print(
+        f"Position P50/P75/P95 (3D): {pos_3d_p50:.2f} / {pos_3d_p75:.2f} / {pos_3d_p95:.2f} m "
+        f"(baseline {pos_3d_baseline_p50:.2f} / {pos_3d_baseline_p75:.2f} / {pos_3d_baseline_p95:.2f} m, "
+        f"improvement {(pos_3d_baseline_p95 - pos_3d_p95)/pos_3d_baseline_p95*100:.2f} % at P95)"
+    )
+    print(
+        f"Velocity P50/P75/P95 (horizontal): {vel_horizontal_p50:.2f} / {vel_horizontal_p75:.2f} / {vel_horizontal_p95:.2f} m/s "
+        f"(baseline {vel_horizontal_baseline_p50:.2f} / {vel_horizontal_baseline_p75:.2f} / {vel_horizontal_baseline_p95:.2f} m/s, "
+        f"improvement {(vel_horizontal_baseline_p95 - vel_horizontal_p95)/vel_horizontal_baseline_p95*100:.2f} % at P95)"
+    )
+
+    print(
+        f"Velocity P50/P75/P95 (vertical): {vel_vertical_p50:.2f} / {vel_vertical_p75:.2f} / {vel_vertical_p95:.2f} m/s "
+        f"(baseline {vel_vertical_baseline_p50:.2f} / {vel_vertical_baseline_p75:.2f} / {vel_vertical_baseline_p95:.2f} m/s, "
+        f"improvement {(vel_vertical_baseline_p95 - vel_vertical_p95)/vel_vertical_baseline_p95*100:.2f} % at P95)"
+    )
+
+    print(
+        f"Velocity P50/P75/P95 (3D): {vel_3d_p50:.2f} / {vel_3d_p75:.2f} / {vel_3d_p95:.2f} m/s "
+        f"(baseline {vel_3d_baseline_p50:.2f} / {vel_3d_baseline_p75:.2f} / {vel_3d_baseline_p95:.2f} m/s, "
+        f"improvement {(vel_3d_baseline_p95 - vel_3d_p95)/vel_3d_baseline_p95*100:.2f} % at P95)"
+    )
+
+    print(
+        f"Speed P50/P75/P95: {speed_p50:.2f} / {speed_p75:.2f} / {speed_p95:.2f} m/s "
+        f"(baseline {speed_baseline_p50:.2f} / {speed_baseline_p75:.2f} / {speed_baseline_p95:.2f} m/s, "
+        f"improvement {(speed_baseline_p95 - speed_p95)/speed_baseline_p95*100:.2f} % at P95)"
+    )
+
     # Write global results to file
     file_name = os.path.join(save_dir, f"results_{kf_string}_{save_postfix}.txt")
     with open(file_name, "a") as f:
@@ -120,6 +222,13 @@ def print_global_error_all_files(results: list, save_dir: str, kf_string: str, s
         f.write(f"Velocity RMSE (vertical):   {vertical_vel_rmse:.2f} m/s (baseline {vertical_vel_baseline_rmse:.2f} m/s, improvement {(vertical_vel_baseline_rmse - vertical_vel_rmse)/vertical_vel_baseline_rmse*100:.2f} %)\n")
         f.write(f"Velocity RMSE (3D):         {vel_rmse_3d:.2f} m/s (baseline {vel_baseline_rmse_3d:.2f} m/s, improvement {(vel_baseline_rmse_3d - vel_rmse_3d)/vel_baseline_rmse_3d*100:.2f} %)\n")
         f.write(f"Speed RMSE:                 {speed_rmse:.2f} m/s (baseline {speed_baseline_rmse:.2f} m/s, improvement {(speed_baseline_rmse - speed_rmse)/speed_baseline_rmse*100:.2f} %)\n")
+        f.write(f"Position P50/P75/P95 (horizontal): {pos_horizontal_p50:.2f} / {pos_horizontal_p75:.2f} / {pos_horizontal_p95:.2f} m (baseline {pos_horizontal_baseline_p50:.2f} / {pos_horizontal_baseline_p75:.2f} / {pos_horizontal_baseline_p95:.2f} m) (improvement {(pos_horizontal_baseline_p50 - pos_horizontal_p50)/pos_horizontal_baseline_p50*100:.2f} / {(pos_horizontal_baseline_p75 - pos_horizontal_p75)/pos_horizontal_baseline_p75*100:.2f} / {(pos_horizontal_baseline_p95 - pos_horizontal_p95)/pos_horizontal_baseline_p95*100:.2f} %)\n")
+        f.write(f"Position P50/P75/P95 (vertical):   {pos_vertical_p50:.2f} / {pos_vertical_p75:.2f} / {pos_vertical_p95:.2f} m (baseline {pos_vertical_baseline_p50:.2f} / {pos_vertical_baseline_p75:.2f} / {pos_vertical_baseline_p95:.2f} m) (improvement {(pos_vertical_baseline_p50 - pos_vertical_p50)/pos_vertical_baseline_p50*100:.2f} / {(pos_vertical_baseline_p75 - pos_vertical_p75)/pos_vertical_baseline_p75*100:.2f} / {(pos_vertical_baseline_p95 - pos_vertical_p95)/pos_vertical_baseline_p95*100:.2f} %)\n")
+        f.write(f"Position P50/P75/P95 (3D):         {pos_3d_p50:.2f} / {pos_3d_p75:.2f} / {pos_3d_p95:.2f} m (baseline {pos_3d_baseline_p50:.2f} / {pos_3d_baseline_p75:.2f} / {pos_3d_baseline_p95:.2f} m) (improvement {(pos_3d_baseline_p50 - pos_3d_p50)/pos_3d_baseline_p50*100:.2f} / {(pos_3d_baseline_p75 - pos_3d_p75)/pos_3d_baseline_p75*100:.2f} / {(pos_3d_baseline_p95 - pos_3d_p95)/pos_3d_baseline_p95*100:.2f} %)\n")
+        f.write(f"Velocity P50/P75/P95 (horizontal): {vel_horizontal_p50:.2f} / {vel_horizontal_p75:.2f} / {vel_horizontal_p95:.2f} m/s (baseline {vel_horizontal_baseline_p50:.2f} / {vel_horizontal_baseline_p75:.2f} / {vel_horizontal_baseline_p95:.2f} m/s) (improvement {(vel_horizontal_baseline_p50 - vel_horizontal_p50)/vel_horizontal_baseline_p50*100:.2f} / {(vel_horizontal_baseline_p75 - vel_horizontal_p75)/vel_horizontal_baseline_p75*100:.2f} / {(vel_horizontal_baseline_p95 - vel_horizontal_p95)/vel_horizontal_baseline_p95*100:.2f} %)\n")
+        f.write(f"Velocity P50/P75/P95 (vertical):   {vel_vertical_p50:.2f} / {vel_vertical_p75:.2f} / {vel_vertical_p95:.2f} m/s (baseline {vel_vertical_baseline_p50:.2f} / {vel_vertical_baseline_p75:.2f} / {vel_vertical_baseline_p95:.2f} m/s) (improvement {(vel_vertical_baseline_p50 - vel_vertical_p50)/vel_vertical_baseline_p50*100:.2f} / {(vel_vertical_baseline_p75 - vel_vertical_p75)/vel_vertical_baseline_p75*100:.2f} / {(vel_vertical_baseline_p95 - vel_vertical_p95)/vel_vertical_baseline_p95*100:.2f} %)\n")
+        f.write(f"Velocity P50/P75/P95 (3D):         {vel_3d_p50:.2f} / {vel_3d_p75:.2f} / {vel_3d_p95:.2f} m/s (baseline {vel_3d_baseline_p50:.2f} / {vel_3d_baseline_p75:.2f} / {vel_3d_baseline_p95:.2f} m/s) (improvement {(vel_3d_baseline_p50 - vel_3d_p50)/vel_3d_baseline_p50*100:.2f} / {(vel_3d_baseline_p75 - vel_3d_p75)/vel_3d_baseline_p75*100:.2f} / {(vel_3d_baseline_p95 - vel_3d_p95)/vel_3d_baseline_p95*100:.2f} %)\n")
+        f.write(f"Speed P50/P75/P95:                 {speed_p50:.2f} / {speed_p75:.2f} / {speed_p95:.2f} m/s (baseline {speed_baseline_p50:.2f} / {speed_baseline_p75:.2f} / {speed_baseline_p95:.2f} m/s) (improvement {(speed_baseline_p50 - speed_p50)/speed_baseline_p50*100:.2f} / {(speed_baseline_p75 - speed_p75)/speed_baseline_p75*100:.2f} / {(speed_baseline_p95 - speed_p95)/speed_baseline_p95*100:.2f} %)\n")
 
 def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
     global net, features, kf_enabled
@@ -153,6 +262,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     pseudoranges = []
     sat_positions_ecef = []
     sat_trajectories = {}
+    epoch_ids = []
 
     kf_string = "kf" if kf_enabled else "no_kf"
 
@@ -173,6 +283,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     i = 0
     for epoch_id, epoch_df in df.groupby("epoch_id"):
         print(f"Processing GNSS epoch {epoch_id+1} / {N}")
+        epoch_ids.append(epoch_id)
 
         pos_truth, vel_truth = common.get_ground_truth(truth_df, epoch_df)
         # Remove clock features from truth. They're not useful here.
@@ -191,23 +302,19 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
         with torch.no_grad():
             Wx, pr_errors, Wv, prr_errors = net(*feats)
 
-        # Wx_baseline = torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float64, device=common.get_device())
-        # Wx_baseline = torch.diag(Wx_baseline)
-        # Wv_baseline = torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float64, device=common.get_device())
-        # Wv_baseline = torch.diag(Wv_baseline)
+        Wx_baseline = torch.tensor(epoch_df['pr_baseline_weight'].to_numpy(), dtype=torch.float64, device=common.get_device())
+        Wx_baseline = torch.diag(Wx_baseline)
+        Wv_baseline = torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float64, device=common.get_device())
+        Wv_baseline = torch.diag(Wv_baseline)
 
-        sigma_elev_pr = (3 / epoch_df['sin_elevation'])**2
-        sigma_cn0_pr = 5 * np.exp(-epoch_df['Cn0DbHz']/20)
-        pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr + 1e-6)
-        pr_weights_baseline *= 10
-        sigma_elev_prr = (0.1 / epoch_df['sin_elevation'])**2
-        sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
-        prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr + 1e-6)
-        Wx_baseline = torch.diag(torch.tensor(pr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
-        Wv_baseline = torch.diag(torch.tensor(prr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
-
-        if epoch_id == 826:
-            print()
+        # sigma_elev_pr = (3 / epoch_df['sin_elevation'])**2
+        # sigma_cn0_pr = 5 * np.exp(-epoch_df['Cn0DbHz']/20)
+        # pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr + 1e-6)
+        # sigma_elev_prr = (0.1 / epoch_df['sin_elevation'])**2
+        # sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
+        # prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr + 1e-6)
+        # Wx_baseline = torch.diag(torch.tensor(pr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
+        # Wv_baseline = torch.diag(torch.tensor(prr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
 
         baseline_pos = common.compute_pos_torch(epoch_df=epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, prr_correction=None, curr_pos=baseline_pos)
 
@@ -229,6 +336,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
                 curr_pos["clock_bias"].cpu().numpy(), 
                 curr_pos["clock_drift"].cpu().numpy(),
                 curr_pos['dop']['hdop'],
+                curr_pos['dop']['vdop'],
                 sat_count,
                 model_speed
                 )
@@ -244,6 +352,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
                                baseline_pos["clock_bias"].cpu().numpy(), 
                                baseline_pos["clock_drift"].cpu().numpy(),
                                baseline_pos['dop']['hdop'],
+                               baseline_pos['dop']['vdop'],
                                sat_count,
                                baseline_speed
                                )
@@ -315,6 +424,8 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
 
     err_horizontal, err_vertical, err_3d = errors_haversine(estimated_positions_lla, truth_positions_lla)
     err_horizontal_baseline, err_vertical_baseline, err_3d_baseline = errors_haversine(estimated_positions_baseline_lla, truth_positions_lla)
+    err_vertical = np.abs(err_vertical)
+    err_vertical_baseline = np.abs(err_vertical_baseline)
     err_horizontal_rmse = np.sqrt(np.mean(err_horizontal**2))
     err_vertical_rmse = np.sqrt(np.mean(err_vertical**2))
     err_3d_rmse = np.sqrt(np.mean(err_3d**2))
@@ -324,18 +435,6 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     err_horizontal_improvement = (err_horizontal_baseline_rmse - err_horizontal_rmse) / err_horizontal_baseline_rmse * 100 if err_horizontal_baseline_rmse > 0 else 0
     err_vertical_improvement = (err_vertical_baseline_rmse - err_vertical_rmse) / err_vertical_baseline_rmse * 100 if err_vertical_baseline_rmse > 0 else 0
     err_3d_improvement = (err_3d_baseline_rmse - err_3d_rmse) / err_3d_baseline_rmse * 100 if err_3d_baseline_rmse > 0 else 0
-    print(f"Position RMSE (horizontal): {err_horizontal_rmse:.2f} m "
-          f"(baseline {err_horizontal_baseline_rmse:.2f} m, "
-          f"improvement {err_horizontal_improvement:.2f} %)"
-          )
-    print(f"Position RMSE (vertical): {err_vertical_rmse:.2f} m "
-          f"(baseline {err_vertical_baseline_rmse:.2f} m, "
-          f"improvement {err_vertical_improvement:.2f} %)"
-          )
-    print(f"Position RMSE (3D): {err_3d_rmse:.2f} m "
-          f"(baseline {err_3d_baseline_rmse:.2f} m, "
-          f"improvement {err_3d_improvement:.2f} %)"
-          )
     # Same for speed
     vel_error = estimated_velocity - truth_velocity
     vel_error_baseline = estimated_velocity_baseline - truth_velocity
@@ -366,6 +465,27 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     vel_horizontal_improvement = (vel_horizontal_baseline_rmse - vel_horizontal_rmse) / vel_horizontal_baseline_rmse * 100 if vel_horizontal_baseline_rmse > 0 else 0
     vel_vertical_improvement = (vel_vertical_baseline_rmse - vel_vertical_rmse) / vel_vertical_baseline_rmse * 100 if vel_vertical_baseline_rmse > 0 else 0
     vel_3d_improvement = (vel_3d_baseline_rmse - vel_3d_rmse) / vel_3d_baseline_rmse * 100 if vel_3d_baseline_rmse > 0 else 0
+
+    speed_diffs = estimated_speed - truth_speed
+    speed_diffs = np.abs(speed_diffs)
+    speed_diffs_baseline = estimated_speed_baseline - truth_speed
+    speed_diffs_baseline = np.abs(speed_diffs_baseline)
+    rmse_speed = np.sqrt(np.mean(speed_diffs**2))
+    rmse_speed_baseline = np.sqrt(np.mean(speed_diffs_baseline**2))
+    rmse_speed_improvement = (rmse_speed_baseline - rmse_speed) / rmse_speed_baseline * 100 if rmse_speed_baseline > 0 else 0
+    
+    print(f"Position RMSE (horizontal): {err_horizontal_rmse:.2f} m "
+          f"(baseline {err_horizontal_baseline_rmse:.2f} m, "
+          f"improvement {err_horizontal_improvement:.2f} %)"
+          )
+    print(f"Position RMSE (vertical): {err_vertical_rmse:.2f} m "
+          f"(baseline {err_vertical_baseline_rmse:.2f} m, "
+          f"improvement {err_vertical_improvement:.2f} %)"
+          )
+    print(f"Position RMSE (3D): {err_3d_rmse:.2f} m "
+          f"(baseline {err_3d_baseline_rmse:.2f} m, "
+          f"improvement {err_3d_improvement:.2f} %)"
+          )
     print(f"Velocity RMSE (horizontal): {vel_horizontal_rmse:.2f} m/s "
           f"(baseline {vel_horizontal_baseline_rmse:.2f} m/s, "
           f"improvement {vel_horizontal_improvement:.2f} %)"
@@ -378,16 +498,55 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
           f"(baseline {vel_3d_baseline_rmse:.2f} m/s, "
           f"improvement {vel_3d_improvement:.2f} %)"
           )
-
-    speed_diffs = estimated_speed - truth_speed
-    speed_diffs_baseline = estimated_speed_baseline - truth_speed
-    rmse_speed = np.sqrt(np.mean(speed_diffs**2))
-    rmse_speed_baseline = np.sqrt(np.mean(speed_diffs_baseline**2))
-    rmse_speed_improvement = (rmse_speed_baseline - rmse_speed) / rmse_speed_baseline * 100 if rmse_speed_baseline > 0 else 0
     print(f"Speed RMSE: {rmse_speed:.2f} m/s "
           f"(baseline {rmse_speed_baseline:.2f} m/s, "
           f"improvement {rmse_speed_improvement:.2f} %)"
           )
+    
+    pos_horizontal_p50 = np.percentile(err_horizontal, 50)
+    pos_horizontal_p75 = np.percentile(err_horizontal, 75)
+    pos_horizontal_p95 = np.percentile(err_horizontal, 95)
+    pos_vertical_p50 = np.percentile(err_vertical, 50)
+    pos_vertical_p75 = np.percentile(err_vertical, 75)
+    pos_vertical_p95 = np.percentile(err_vertical, 95)
+    pos_3d_p50  = np.percentile(err_3d, 50)
+    pos_3d_p75  = np.percentile(err_3d, 75)
+    pos_3d_p95  = np.percentile(err_3d, 95)
+    pos_horizontal_p50_baseline = np.percentile(err_horizontal_baseline, 50)
+    pos_horizontal_p75_baseline = np.percentile(err_horizontal_baseline, 75)
+    pos_horizontal_p95_baseline = np.percentile(err_horizontal_baseline, 95)
+    pos_vertical_p50_baseline = np.percentile(err_vertical_baseline, 50)
+    pos_vertical_p75_baseline = np.percentile(err_vertical_baseline, 75)
+    pos_vertical_p95_baseline = np.percentile(err_vertical_baseline, 95)
+    pos_3d_p50_baseline = np.percentile(err_3d_baseline, 50)
+    pos_3d_p75_baseline = np.percentile(err_3d_baseline, 75)
+    pos_3d_p95_baseline = np.percentile(err_3d_baseline, 95)
+
+    vel_horizontal_p50 = np.percentile(vel_err_horizontal, 50)
+    vel_horizontal_p75 = np.percentile(vel_err_horizontal, 75)
+    vel_horizontal_p95 = np.percentile(vel_err_horizontal, 95)
+    vel_vertical_p50 = np.percentile(vel_err_vertical, 50)
+    vel_vertical_p75 = np.percentile(vel_err_vertical, 75)
+    vel_vertical_p95 = np.percentile(vel_err_vertical, 95)
+    vel_3d_p50  = np.percentile(vel_err_3d, 50)
+    vel_3d_p75  = np.percentile(vel_err_3d, 75)
+    vel_3d_p95  = np.percentile(vel_err_3d, 95)
+    vel_horizontal_p50_baseline = np.percentile(vel_err_horizontal_baseline, 50)
+    vel_horizontal_p75_baseline = np.percentile(vel_err_horizontal_baseline, 75)
+    vel_horizontal_p95_baseline = np.percentile(vel_err_horizontal_baseline, 95)
+    vel_vertical_p50_baseline = np.percentile(vel_err_vertical_baseline, 50)
+    vel_vertical_p75_baseline = np.percentile(vel_err_vertical_baseline, 75)
+    vel_vertical_p95_baseline = np.percentile(vel_err_vertical_baseline, 95)
+    vel_3d_p50_baseline = np.percentile(vel_err_3d_baseline, 50)
+    vel_3d_p75_baseline = np.percentile(vel_err_3d_baseline, 75)
+    vel_3d_p95_baseline = np.percentile(vel_err_3d_baseline, 95)
+
+    speed_p50 = np.percentile(speed_diffs, 50)
+    speed_p75 = np.percentile(speed_diffs, 75)
+    speed_p95 = np.percentile(speed_diffs, 95)
+    speed_p50_baseline = np.percentile(speed_diffs_baseline, 50)
+    speed_p75_baseline = np.percentile(speed_diffs_baseline, 75)
+    speed_p95_baseline = np.percentile(speed_diffs_baseline, 95)
 
     # Write rmse results to file
     results_save_name = os.path.join(save_dir, f"results_{kf_string}_{save_postfix}.txt")
@@ -400,6 +559,13 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
         f.write(f"Velocity RMSE (vertical):   {vel_vertical_rmse:.2f} m/s (baseline {vel_vertical_baseline_rmse:.2f} m/s, improvement {vel_vertical_improvement:.2f} %)\n")
         f.write(f"Velocity RMSE (3D):         {vel_3d_rmse:.2f} m/s (baseline {vel_3d_baseline_rmse:.2f} m/s, improvement {vel_3d_improvement:.2f} %)\n")
         f.write(f"Speed RMSE:                 {rmse_speed:.2f} m/s (baseline {rmse_speed_baseline:.2f} m/s, improvement {rmse_speed_improvement:.2f} %)\n")
+        f.write(f"Position P50/P75/P95 (horizontal): {pos_horizontal_p50:.2f} / {pos_horizontal_p75:.2f} / {pos_horizontal_p95:.2f} m (baseline {pos_horizontal_p50_baseline:.2f} / {pos_horizontal_p75_baseline:.2f} / {pos_horizontal_p95_baseline:.2f} m, improvement {(pos_horizontal_p50_baseline - pos_horizontal_p50)/pos_horizontal_p50_baseline*100:.2f} / {(pos_horizontal_p75_baseline - pos_horizontal_p75)/pos_horizontal_p75_baseline*100:.2f} / {(pos_horizontal_p95_baseline - pos_horizontal_p95)/pos_horizontal_p95_baseline*100:.2f} %)\n")
+        f.write(f"Position P50/P75/P95 (vertical):   {pos_vertical_p50:.2f} / {pos_vertical_p75:.2f} / {pos_vertical_p95:.2f} m (baseline {pos_vertical_p50_baseline:.2f} / {pos_vertical_p75_baseline:.2f} / {pos_vertical_p95_baseline:.2f} m, improvement {(pos_vertical_p50_baseline - pos_vertical_p50)/pos_vertical_p50_baseline*100:.2f} / {(pos_vertical_p75_baseline - pos_vertical_p75)/pos_vertical_p75_baseline*100:.2f} / {(pos_vertical_p95_baseline - pos_vertical_p95)/pos_vertical_p95_baseline*100:.2f} %)\n")
+        f.write(f"Position P50/P75/P95 (3D):         {pos_3d_p50:.2f} / {pos_3d_p75:.2f} / {pos_3d_p95:.2f} m (baseline {pos_3d_p50_baseline:.2f} / {pos_3d_p75_baseline:.2f} / {pos_3d_p95_baseline:.2f} m, improvement {(pos_3d_p50_baseline - pos_3d_p50)/pos_3d_p50_baseline*100:.2f} / {(pos_3d_p75_baseline - pos_3d_p75)/pos_3d_p75_baseline*100:.2f} / {(pos_3d_p95_baseline - pos_3d_p95)/pos_3d_p95_baseline*100:.2f} %)\n")
+        f.write(f"Velocity P50/P75/P95 (horizontal): {vel_horizontal_p50:.2f} / {vel_horizontal_p75:.2f} / {vel_horizontal_p95:.2f} m/s (baseline {vel_horizontal_p50_baseline:.2f} / {vel_horizontal_p75_baseline:.2f} / {vel_horizontal_p95_baseline:.2f} m/s, improvement {(vel_horizontal_p50_baseline - vel_horizontal_p50)/vel_horizontal_p50_baseline*100:.2f} / {(vel_horizontal_p75_baseline - vel_horizontal_p75)/vel_horizontal_p75_baseline*100:.2f} / {(vel_horizontal_p95_baseline - vel_horizontal_p95)/vel_horizontal_p95_baseline*100:.2f} %)\n")
+        f.write(f"Velocity P50/P75/P95 (vertical):   {vel_vertical_p50:.2f} / {vel_vertical_p75:.2f} / {vel_vertical_p95:.2f} m/s (baseline {vel_vertical_p50_baseline:.2f} / {vel_vertical_p75_baseline:.2f} / {vel_vertical_p95_baseline:.2f} m/s, improvement {(vel_vertical_p50_baseline - vel_vertical_p50)/vel_vertical_p50_baseline*100:.2f} / {(vel_vertical_p75_baseline - vel_vertical_p75)/vel_vertical_p75_baseline*100:.2f} / {(vel_vertical_p95_baseline - vel_vertical_p95)/vel_vertical_p95_baseline*100:.2f} %)\n")
+        f.write(f"Velocity P50/P75/P95 (3D):         {vel_3d_p50:.2f} / {vel_3d_p75:.2f} / {vel_3d_p95:.2f} m/s (baseline {vel_3d_p50_baseline:.2f} / {vel_3d_p75_baseline:.2f} / {vel_3d_p95_baseline:.2f} m/s, improvement {(vel_3d_p50_baseline - vel_3d_p50)/vel_3d_p50_baseline*100:.2f} / {(vel_3d_p75_baseline - vel_3d_p75)/vel_3d_p75_baseline*100:.2f} / {(vel_3d_p95_baseline - vel_3d_p95)/vel_3d_p95_baseline*100:.2f} %)\n")
+        f.write(f"Speed P50/P75/P95:                 {speed_p50:.2f} / {speed_p75:.2f} / {speed_p95:.2f} m/s (baseline {speed_p50_baseline:.2f} / {speed_p75_baseline:.2f} / {speed_p95_baseline:.2f} m/s, improvement {(speed_p50_baseline - speed_p50)/speed_p50_baseline*100:.2f} / {(speed_p75_baseline - speed_p75)/speed_p75_baseline*100:.2f} / {(speed_p95_baseline - speed_p95)/speed_p95_baseline*100:.2f} %)\n")
 
     m = folium.Map(
         location=[truth_positions_lla[0,0], truth_positions_lla[0,1]],
@@ -464,15 +630,15 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
 
     cdf_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_error_cdf_{kf_string}_{save_postfix}.png")
     cdf_result = compute_position_error_cdf(estimated_positions_baseline_ecef, estimated_positions_ecef, truth_positions_ecef)
-    plt.figure(figsize=(12, 8))
-    plt.figure(figsize=(12, 8))
+    # plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(8, 5))
     plt.plot(cdf_result['error_range'], cdf_result['baseline_cdf'], label='Baseline')
     plt.plot(cdf_result['error_range'], cdf_result['nn_cdf'], label='NN Estimate')
     plt.xlabel('Position Error (m)')
     plt.ylabel('CDF')
     plt.grid(True)
     plt.legend(loc="lower right")
-    plt.savefig(cdf_save_name)
+    plt.savefig(cdf_save_name, dpi=200, bbox_inches='tight')
     plt.close()
 
     # plot errors horizontal/vertical/3d over time
@@ -503,6 +669,35 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     plt.savefig(err_over_time_save_name)
     plt.close()
 
+    # Write trajectory csv
+    trajectory_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_trajectory_{kf_string}_{save_postfix}.csv")
+    trajectory_df = pd.DataFrame({
+        "truth_lat": truth_positions_lla[:,0],
+        "truth_lon": truth_positions_lla[:,1],
+        # "truth_alt": truth_positions_lla[:,2],
+        "est_lat": estimated_positions_lla[:,0],
+        "est_lon": estimated_positions_lla[:,1],
+        # "est_alt": estimated_positions_lla[:,2],
+        "est_baseline_lat": estimated_positions_baseline_lla[:,0],
+        "est_baseline_lon": estimated_positions_baseline_lla[:,1],
+        # "est_baseline_alt": estimated_positions_baseline_lla[:,2],
+        # "truth_vel_x": truth_velocity[:,0],
+        # "truth_vel_y": truth_velocity[:,1],
+        # "truth_vel_z": truth_velocity[:,2],
+        # "est_vel_x": estimated_velocity[:,0],
+        # "est_vel_y": estimated_velocity[:,1],
+        # "est_vel_z": estimated_velocity[:,2],
+        # "est_baseline_vel_x": estimated_velocity_baseline[:,0],
+        # "est_baseline_vel_y": estimated_velocity_baseline[:,1],
+        # "est_baseline_vel_z": estimated_velocity_baseline[:,2],
+        # "truth_speed": truth_speed,
+        # "est_speed": estimated_speed,
+        # "est_baseline_speed": estimated_speed_baseline,
+        "epoch_id": epoch_ids
+    })
+    trajectory_df.to_csv(trajectory_save_name, index=False)
+
+
     return {
         "horizontal_sse": float(np.sum(err_horizontal**2)),
         "vertical_sse": float(np.sum(err_vertical**2)),
@@ -520,4 +715,18 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
         "speed_baseline_sse": float(np.sum(speed_diffs_baseline**2)),
         "count": int(len(err_horizontal)),
         "speed_count": int(len(speed_diffs)),
+        "pos_horizontal_errors": err_horizontal.tolist(),
+        "pos_vertical_errors": err_vertical.tolist(),
+        "pos_3d_errors": err_3d.tolist(),
+        "vel_horizontal_errors": vel_err_horizontal.tolist(),
+        "vel_vertical_errors": vel_err_vertical.tolist(),
+        "vel_3d_errors": vel_err_3d.tolist(),
+        "speed_errors": speed_diffs.tolist(),
+        "pos_horizontal_baseline_errors": err_horizontal_baseline.tolist(),
+        "pos_vertical_baseline_errors": err_vertical_baseline.tolist(),
+        "pos_3d_baseline_errors": err_3d_baseline.tolist(),
+        "vel_horizontal_baseline_errors": vel_err_horizontal_baseline.tolist(),
+        "vel_vertical_baseline_errors": vel_err_vertical_baseline.tolist(),
+        "vel_3d_baseline_errors": vel_err_3d_baseline.tolist(),
+        "speed_baseline_errors": speed_diffs_baseline.tolist(),
     }

@@ -80,7 +80,7 @@ if __name__ == "__main__":
     base_path = args.base_path
     setup(base_path, Gnss_multi_epoch_net, args.compute_baseline)
 
-    num_epochs = 10
+    num_epochs = 5
 
     for epoch_num in range(1, num_epochs + 1):
         print(f"======== Starting training for epoch {epoch_num} / {num_epochs} ========")
@@ -95,4 +95,5 @@ if __name__ == "__main__":
             df, truth_df = drive.get_dataframes()
             epoch_manager = Epoch_manager(10)
             run(df, truth_df, get_feats, save_path=args.output_path)
-            step_scheduler()
+            
+        step_scheduler()

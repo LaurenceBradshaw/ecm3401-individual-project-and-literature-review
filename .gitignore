@@ -11,3 +11,5 @@ cn0_figs/
 preprocessing_artifacts/
 single_epoch_evaluation/
 multi_epoch_evaluation/
+single_epoch_evaluation_robustness/
+multi_epoch_evaluation_robustness/

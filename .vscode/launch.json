@@ -35,6 +35,7 @@
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./single_epoch_network.pt",
                 "-o", "./single_epoch_evaluation",
+                // "-o", "./single_epoch_evaluation_robustness",
                 // "--kf"
             ] 
         },
@@ -48,7 +49,10 @@
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./multi_epoch_network.pt",
                 "-o", "./multi_epoch_evaluation",
+                // "-o", "./multi_epoch_evaluation_512",
+                // "-o", "./multi_epoch_evaluation_robustness",
                 // "--kf"
+                // "-d", "2021-12-08-17-22-us-ca-lax-a/pixel6pro"
             ] 
         },
         { 
@@ -61,6 +65,7 @@
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./single_epoch_network.pt",
                 "-o", "./single_epoch_evaluation",
+                // "-o", "./single_epoch_evaluation_robustness",
                 "--kf"
             ] 
         },
@@ -74,6 +79,7 @@
                 "-b", "./smartphone-decimeter-2023/sdc2023/train",
                 "-m", "./multi_epoch_network.pt",
                 "-o", "./multi_epoch_evaluation",
+                // "-o", "./multi_epoch_evaluation_robustness",
                 "--kf",
             ] 
         },
