@@ -5,21 +5,63 @@ import torch.nn.functional as F
 from internals.preprocessing.hash_file import preprocessing_artifacts_path
 
 torch.set_default_dtype(torch.float64)
-torch.manual_seed(42 * 42) # The meaning of life, the universe, and everything GNSS
+torch.manual_seed(42 * 42) # The meaning of life, the universe, and everything GNSS squared for good measure
 
 def _load_string_list(file_path: str) -> list[str]:
+    """
+    Loads a list of strings from a text file, where each line corresponds to one string.
+
+    Parameters
+    ----------
+    file_path: str
+        The path to the text file containing the list of strings.
+
+    Returns
+    -------
+    list[str]
+        The list of strings loaded from the file.
+    """
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"File not found: {file_path}, please run the preprocessing script.")
     with open(file_path, "r", encoding="utf-8") as f:
         return [line.rstrip("\n") for line in f]
     
 def get_test_drives(base_path: str) -> list[str]:
+    """
+    Read the list of test drives from the preprocessing artifacts. 
+    The test drives are stored in a text file where each line is a relative path to a drive directory. 
+    Prepend the base path to get the full paths to the test drives.
+
+    Parameters
+    ----------
+    base_path: str
+        The base directory containing drive data subdirectories.
+
+    Returns
+    -------
+    list[str]
+        A list of full paths to the test drives.
+    """
     test_drives = _load_string_list(os.path.join(preprocessing_artifacts_path(), "test_drives.txt"))
     # add base path back to test drives
     test_drives = [os.path.join(base_path, d) for d in test_drives]
     return test_drives
 
 def get_training_drives(base_path: str) -> list[str]:
+    """
+    Get the list of training drives by excluding any drives that are in the same directory as 
+    the test drives, to prevent data leakage.
+
+    Parameters
+    ----------
+    base_path: str
+        The base directory containing drive data subdirectories.
+
+    Returns
+    -------
+    list[str]
+        A list of full paths to the training drives.
+    """
     test_drives = set(get_test_drives(base_path))
     test_drives_no_phone = set(os.path.dirname(d) for d in test_drives)
     all_drives = [
@@ -36,13 +78,40 @@ def get_training_drives(base_path: str) -> list[str]:
     return training_drives
 
 class Standardiser(nn.Module):
+    """
+    Standardises the input features using the provided mean and std, but only for the features that require standardisation.
+    """
+
     def __init__(self, mean: torch.Tensor, std: torch.Tensor, need_standardising: torch.Tensor):
+        """
+        Parameters
+        ----------
+        mean: torch.Tensor
+            The mean values for each feature, used for standardisation.
+        std: torch.Tensor
+            The standard deviation values for each feature, used for standardisation.
+        need_standardising: torch.Tensor
+            A boolean tensor indicating which features require standardisation (True for standardise, False to leave unchanged).
+        """
         super().__init__()
         self.register_buffer("mean", mean)
         self.register_buffer("std", std)
         self.register_buffer("need_standardising", need_standardising)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass that standardises the input features.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            The input tensor of shape (num_sats, feat_dim) containing the features for each satellite.
+
+        Returns
+        -------
+        torch.Tensor
+            The output tensor with the same shape as input, where the features that require standardisation have been standardised.
+        """
         x_std = (x - self.mean) / self.std
         return torch.where(self.need_standardising, x_std, x)
 
@@ -54,6 +123,14 @@ class Residual_block(nn.Module):
     Input and output dims are both `dim`, so no projection is needed.
     """
     def __init__(self, dim: int, dropout: float = 0.1):
+        """
+        Parameters
+        ----------
+        dim: int
+            The input and output dimension of the residual block.
+        dropout: float, optional
+            The dropout rate to be applied after the first linear layer, by default 0.1.
+        """
         super().__init__()
         self.block_ = nn.Sequential(
             nn.Linear(dim, dim),
@@ -64,6 +141,14 @@ class Residual_block(nn.Module):
         self.norm_ = nn.LayerNorm(dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the residual block.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            The input tensor of shape (dim,).
+        """
         return self.norm_(x + self.block_(x))
 
 
@@ -73,6 +158,18 @@ class Single_sat_encoder(nn.Module):
     skip connection from input to output (projected if dims differ).
     """
     def __init__(self, feat_dim: int, hidden_dim: int, emb_dim: int, dropout: float):
+        """
+        Parameters
+        ----------
+        feat_dim: int
+            The dimension of the input features for each satellite.
+        hidden_dim: int
+            The dimension of the hidden layer in the MLP.
+        emb_dim: int
+            The dimension of the output embedding for each satellite.
+        dropout: float
+            The dropout rate to be applied in the MLP.
+        """
         super().__init__()
         self.net_ = nn.Sequential(
             nn.Linear(feat_dim, hidden_dim),
@@ -89,7 +186,19 @@ class Single_sat_encoder(nn.Module):
         self.norm_ = nn.LayerNorm(emb_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (num_sats, feat_dim)
+        """
+        Forward pass through the single satellite encoder.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            The input tensor of shape (num_sats, feat_dim) containing the features for each satellite.
+
+        Returns
+        -------
+        torch.Tensor
+            The output tensor of shape (num_sats, emb_dim) containing the encoded features for each satellite.
+        """
         return self.norm_(self.net_(x) + self.residual_proj_(x))
 
 
@@ -98,6 +207,16 @@ class Multi_sat_encoder(nn.Module):
     Encodes the entire satellite set using an LSTM to capture live sky conditions.
     """
     def __init__(self, feat_dim: int, lstm_hidden: int, lstm_layers: int):
+        """
+        Parameters
+        ----------
+        feat_dim: int
+            The dimension of the input features for each satellite.
+        lstm_hidden: int
+            The hidden dimension of the LSTM.
+        lstm_layers: int
+            The number of layers in the LSTM.
+        """
         super().__init__()
         self.lstm_ = nn.LSTM(
             input_size=feat_dim,
@@ -108,7 +227,19 @@ class Multi_sat_encoder(nn.Module):
         )
 
     def forward(self, sats: torch.Tensor) -> torch.Tensor:
-        # sats: (num_sats, feat_dim)
+        """
+        Forward pass through the multi-satellite encoder.
+
+        Parameters
+        ----------
+        sats: torch.Tensor
+            The input tensor of shape (num_sats, feat_dim) containing the features for each satellite.
+
+        Returns
+        -------
+        torch.Tensor
+            The output tensor of shape (num_sats, lstm_hidden) containing the encoded features for each satellite.
+        """
         seq = sats.unsqueeze(1) # (num_sats, 1, feat_dim)
         lstm_out, _ = self.lstm_(seq)
         return lstm_out.squeeze(1) # (num_sats, lstm_hidden)
@@ -121,6 +252,20 @@ class Temporal_sat_encoder(nn.Module):
     Output shape: (num_sats, emb_dim)
     """
     def __init__(self, feat_dim: int, lstm_hidden: int, lstm_layers: int, emb_dim: int, dropout: float):
+        """
+        Parameters
+        ----------
+        feat_dim: int
+            The dimension of the input features for each satellite at each time step.
+        lstm_hidden: int
+            The hidden dimension of the LSTM.
+        lstm_layers: int
+            The number of layers in the LSTM.
+        emb_dim: int
+            The dimension of the output embedding for each satellite.
+        dropout: float
+            The dropout rate to be applied in the LSTM.
+        """
         super().__init__()
 
         self.lstm_ = nn.LSTM(
@@ -143,9 +288,21 @@ class Temporal_sat_encoder(nn.Module):
         self.norm_ = nn.LayerNorm(emb_dim)
 
     def forward(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-        # seq:     (num_sats, time_steps, feat_dim)
-        # lengths: (num_sats,) valid sequence lengths
+        """
+        Forward pass through the temporal satellite encoder.
 
+        Parameters
+        ----------
+        seq: torch.Tensor
+            The input tensor of shape (num_sats, time_steps, feat_dim) containing the features for each satellite at each time step.
+        lengths: torch.Tensor
+            The tensor of shape (num_sats,) containing the valid sequence lengths for each satellite.
+
+        Returns
+        -------
+        torch.Tensor
+            The output tensor of shape (num_sats, emb_dim) containing the encoded features for each satellite.
+        """
         packed = torch.nn.utils.rnn.pack_padded_sequence(
             seq,
             lengths.cpu(),
@@ -162,7 +319,18 @@ class Temporal_sat_encoder(nn.Module):
 
 
 class Pairwise_attention_encoder(nn.Module):
+    """
+    Encodes pairwise relationships between satellites using attention mechanisms.
+    """
     def __init__(self, hidden_dim, output_dim):
+        """
+        Parameters
+        ----------
+        hidden_dim: int
+            The dimension of the hidden states in the attention mechanism.
+        output_dim: int
+            The dimension of the output tensor.
+        """
         super().__init__()
         self.embed = nn.Linear(1, hidden_dim)
         self.attn = nn.MultiheadAttention(
@@ -174,11 +342,32 @@ class Pairwise_attention_encoder(nn.Module):
         self.out = nn.Linear(hidden_dim, output_dim)
 
     def _create_diag_mask(self, size: int) -> torch.Tensor:
+        """
+        Creates a diagonal mask for the attention mechanism.
+
+        Parameters
+        ----------
+        size: int
+            The size of the square mask to be created.
+        """
         mask = torch.zeros((size, size), dtype=torch.bool)
         mask.fill_diagonal_(True)
         return mask
 
     def forward(self, residuals: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the pairwise attention encoder.
+
+        Parameters
+        ----------
+        residuals: torch.Tensor
+            The input tensor of shape (num_sats, num_sats) containing the residuals between satellites.
+
+        Returns
+        -------
+        torch.Tensor
+            The output tensor of shape (num_sats, output_dim) containing the encoded pairwise relationships.
+        """
         n_sats = residuals.size(0)
         mask = self._create_diag_mask(n_sats).to(residuals.device)
 
@@ -195,7 +384,6 @@ class Pairwise_attention_encoder(nn.Module):
 
 
 class Gnss_single_epoch_net(nn.Module):
-# TODO: add inverse measurement uncertainty.
     features = [
         'Cn0DbHz_linear',          # signal strength
         'sin_elevation',           # sat geometry
@@ -256,6 +444,36 @@ class Gnss_single_epoch_net(nn.Module):
         need_standardising: torch.Tensor = None,
         require_standardisation: bool = True,
     ):
+        """
+        Parameters
+        ----------
+        feat_dim: int
+            The dimension of the input features.
+        mean: torch.Tensor
+            The mean values for feature standardisation.
+        std: torch.Tensor
+            The standard deviation values for feature standardisation.
+        per_sat_hidden: int
+            The dimension of the hidden states in the per-satellite encoder.
+        per_sat_emb_dim: int
+            The dimension of the embedding space in the per-satellite encoder.
+        lstm_hidden: int
+            The dimension of the hidden states in the LSTM.
+        lstm_layers: int
+            The number of layers in the LSTM.
+        pairwise_attn_hidden: int
+            The dimension of the hidden states in the pairwise attention mechanism.
+        pairwise_attn_output: int
+            The dimension of the output tensor from the pairwise attention mechanism.
+        joint_hidden: int
+            The dimension of the hidden states in the joint MLP.
+        dropout: float
+            The dropout rate for regularization.
+        need_standardising: torch.Tensor
+            A boolean tensor indicating which features need standardisation.
+        require_standardisation: bool
+            Whether to apply standardisation to the input features.
+        """
         super().__init__()
 
         if need_standardising is None:
@@ -340,6 +558,23 @@ class Gnss_single_epoch_net(nn.Module):
         pr_residual_matrix: torch.Tensor,
         prr_residual_matrix: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through the GNSS single epoch network.
+
+        Parameters
+        ----------
+        sats: torch.Tensor
+            The input tensor of shape (num_sats, feat_dim) containing the satellite features.
+        pr_residual_matrix: torch.Tensor
+            The input tensor of shape (num_sats, num_sats) containing the PR residuals between satellites.
+        prr_residual_matrix: torch.Tensor
+            The input tensor of shape (num_sats, num_sats) containing the PRR residuals between satellites.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            A tuple containing the weight matrices and error vectors for PR and PRR.
+        """
         if sats.dim() != 2:
             raise ValueError("sats must be (num_sats, feat_dim)")
 
@@ -442,6 +677,30 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         joint_hidden: int = 512,
         dropout: float = 0.1,
     ):
+        """
+        Parameters
+        ----------
+        feat_dim: int
+            The dimension of the input features.
+        mean: torch.Tensor
+            The mean values for feature standardisation.
+        std: torch.Tensor
+            The standard deviation values for feature standardisation.
+        per_sat_lstm_hidden: int
+            The dimension of the hidden states in the per-satellite LSTM.
+        per_sat_lstm_layers: int
+            The number of layers in the per-satellite LSTM.
+        per_sat_emb_dim: int
+            The dimension of the embedding space in the per-satellite encoder.
+        lstm_hidden: int
+            The dimension of the hidden states in the LSTM.
+        lstm_layers: int
+            The number of layers in the LSTM.
+        joint_hidden: int
+            The dimension of the hidden states in the joint MLP.
+        dropout: float
+            The dropout rate for regularization.
+        """
         super(Gnss_multi_epoch_net, self).__init__(
             feat_dim=per_sat_emb_dim,
             mean=mean,
@@ -477,6 +736,25 @@ class Gnss_multi_epoch_net(Gnss_single_epoch_net): # Technically incorrect, but 
         pr_residual_matrix: torch.Tensor,
         prr_residual_matrix: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through the GNSS multi-epoch network.
+
+        Parameters
+        ----------
+        sats: torch.Tensor
+            The input tensor of shape (num_sats, time_steps, feat_dim) containing the satellite features.
+        lengths: torch.Tensor
+            The input tensor of shape (num_sats,) containing the lengths of each satellite's sequence.
+        pr_residual_matrix: torch.Tensor
+            The input tensor of shape (num_sats, num_sats) containing the PR residuals between satellites.
+        prr_residual_matrix: torch.Tensor
+            The input tensor of shape (num_sats, num_sats) containing the PRR residuals between satellites.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            A tuple containing the weight matrices and error vectors for PR and PRR.
+        """
         if sats.dim() != 3:
             raise ValueError("sats must be (num_sats, time_steps, feat_dim)")
 

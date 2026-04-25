@@ -12,6 +12,23 @@ from model import Gnss_multi_epoch_net, get_training_drives
 epoch_manager = None
 
 def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Get the features for the current epoch, including the temporal history of features for each satellite.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The DataFrame containing the data for the current epoch.
+    features: list[str]
+        The list of feature names to extract.
+    device: str
+        The device on which to place the tensors.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        A tuple containing the padded tensor of features and the tensor of sequence lengths.
+    """
     feats_np = epoch_df[features].to_numpy(dtype=np.float64)
     feats = torch.tensor(feats_np, dtype=torch.float64, device=device)
 

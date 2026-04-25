@@ -13,3 +13,4 @@ single_epoch_evaluation/
 multi_epoch_evaluation/
 single_epoch_evaluation_robustness/
 multi_epoch_evaluation_robustness/
+nn_diagrams/

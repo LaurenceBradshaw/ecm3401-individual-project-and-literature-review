@@ -1,11 +1,23 @@
 import pandas as pd
-import os
 import torch
-from internals import gnss_positioning as gp
-from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
 import internals.common as common
 
-def colour_delta(val, max_val=1e1):
+def colour_delta(val: float, max_val: float = 1e1) -> str:
+    """
+    Colour a value based on its magnitude and sign for terminal output.
+
+    Parameters
+    ----------
+    val: float
+        The value to be coloured.
+    max_val: float, optional
+        The maximum value for scaling the intensity, by default 1e1
+
+    Returns
+    -------
+    str
+        The input value formatted as a string with ANSI colour codes applied based on its magnitude and sign.
+    """
     # Clamp magnitude to max_val
     magnitude = min(abs(val), max_val)
     # Scale intensity 0-255
@@ -20,6 +32,23 @@ def colour_delta(val, max_val=1e1):
         return f"{val:+.3e}"  # no colour for zero
 
 def setup(base_path: str, network_cls: torch.nn.Module, compute_baseline: bool) -> None:
+    """
+    Set up the training environment by initializing the neural network, optimizer, and learning rate scheduler. 
+    Loads dataset statistics for feature normalisation.
+
+    Parameters
+    ----------
+    base_path: str
+        The base directory containing drive data subdirectories and the dataset statistics file.
+    network_cls: torch.nn.Module
+        The class of the neural network to be trained, which should accept mean, std, and feat_dim as initialization parameters.
+    compute_baseline: bool
+        Whether to compute baseline weights for comparison during training.
+
+    Returns
+    -------
+    None
+    """
     global net, optimizer, features, scheduler, _compute_baseline
     ###############
     features = network_cls.features
@@ -46,6 +75,28 @@ def step_scheduler():
     scheduler.step()
 
 def run(df: pd.DataFrame, truth_df: pd.DataFrame, get_feats: callable, save_path: str) -> None:
+    """
+    Run a training step on the given drive data, iterating through each epoch, 
+    computing the model's position and velocity estimates, calculating losses against ground truth, 
+    and performing backpropagation to update the model's parameters.
+
+    Saves the model's state dictionary after processing the drive.
+
+    Parameters
+    ----------
+    df: pd.DataFrame
+        The dataframe containing the device GNSS data for the current drive.
+    truth_df: pd.DataFrame
+        The dataframe containing the ground truth data for the current drive.
+    get_feats: callable
+        A function that takes an epoch dataframe and returns the features to be input into the neural network
+    save_path: str
+        The path where the trained model's state dictionary will be saved after processing the drive.
+
+    Returns
+    -------
+    None
+    """
     N = df['epoch_id'].nunique()
 
     # Initial position estimate using first epoch otherwise gradients are terrible initially

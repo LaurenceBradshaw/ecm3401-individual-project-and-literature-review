@@ -9,14 +9,32 @@ from internals.preprocessing.hash_file import hash_file
 HASH_FILE = "preprocess_focused_subsets_hash_table.json"
 
 def create_focused_subset(drive: Drive, drive_i: int, n_drives: int, hash_table: dict, per_file_hash: str) -> None:
+    """
+    Split a drive into 3 parts based on the largest pseudorange residuals, and save these parts as new files.
+
+    Parameters
+    ----------
+    drive: Drive
+        The drive to be processed.
+    drive_i: int
+        The index of the current drive (for progress tracking).
+    n_drives: int
+        The total number of drives (for progress tracking).
+    hash_table: dict
+        A dictionary to store hashes for caching purposes.
+    per_file_hash: str
+        A hash representing the current state of the preprocessing logic.
+
+    Returns
+    -------
+    None
+    """
     hash = hash_file(__file__)
     joint_hash = hash + per_file_hash # join the hashes that way if per_file changes, but this focused_subset doesn't, we know we still need to redo this drive
 
-    # For each file, find the largest area of pseudorange residuals (from truth), and save as a new file with the 100 surrounding epochs.
-    # Can repeat n times per file.
-    window_size = 100          # Total number of epochs per window
+    window_size = 100
     half_window = window_size // 2
-    n_parts = 3                # Max number of windows per drive
+    n_parts = 3
 
     if f"parts_{drive.get_directory_name()}" in hash_table and hash_table[f"parts_{drive.get_directory_name()}"] == joint_hash:
         print(f"[{drive_i+1}/{n_drives}] Skipping drive for focused subsets (already processed with same code): {drive.get_directory_name()}")

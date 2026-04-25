@@ -10,6 +10,23 @@ from model import Gnss_single_epoch_net, get_test_drives
 
 
 def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple[torch.Tensor]:
+    """
+    Get the features for the current epoch.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The dataframe containing the device GNSS data for the current epoch.
+    features: list[str]
+        The list of feature column names to be extracted.
+    device: str
+        The device on which to place the tensors.
+        
+    Returns
+    -------
+    tuple[torch.Tensor]
+        A tuple containing the tensor of features.
+    """
     feats = epoch_df[features].to_numpy(dtype=np.float64)
     feats = torch.tensor(feats, dtype=torch.float64, device=device)
     pr_res_matrix, prr_res_matrix = compute_residual_matrix(epoch_df)
@@ -79,18 +96,3 @@ if __name__ == "__main__":
         results.append(error_dict)
 
     print_global_error_all_files(results, save_dir, kf_string, save_postfix)
-
-#     # data_iter = Data_file_iterator(base_path, split='train', prefix='2022-02-24-18-29-us-ca-lax-o')
-#     data_iter = Data_file_iterator(base_path, split='train', prefix='2021-07-14-20-50-us-ca-mtv-e')
-#     # data_iter = Data_file_iterator(base_path, split='train', prefix='2022-04-01-18-22-us-ca-lax-t')
-#     # data_iter = Data_file_iterator(base_path, split='train', prefix='2023-09-06-00-01-us-ca-routen')
-#     # data_iter = Data_file_iterator(base_path, split='train', prefix='2023-03-08-21-34-us-ca-mtv-u')
-#     # data_iter = Data_file_iterator(base_path, split='train', prefix='2023-05-09-21-32-us-ca-mtv-pe1')
-    # drive = Drive(os.path.join(base_path, "2022-02-24-18-29-us-ca-lax-o", "mi8")) # massive los and multipath
-    # drive = Drive(os.path.join(base_path, "2020-06-25-00-34-us-ca-mtv-sb-101", "pixel4xl"))
-    # drive = Drive(os.path.join(base_path, "2023-09-06-00-01-us-ca-routen", "pixel4xl"))
-    # drive = Drive(os.path.join(base_path, "2023-03-08-21-34-us-ca-mtv-u", "pixel7pro")) # test candidate (makes it look good)
-    # drive = Drive(os.path.join(base_path, "2021-12-08-20-28-us-ca-lax-c", "sm-g988b")) # test candidate (makes it look good)
-    # drive = Drive(os.path.join(base_path, "2021-12-08-18-52-us-ca-lax-b", "pixel6pro"))
-    # drive = Drive(os.path.join(base_path, "2023-05-24-20-26-us-ca-sjc-ge2", "pixel7pro")) # train candidate
-    # drive = Drive(os.path.join(base_path, "2023-05-19-20-10-us-ca-mtv-ie2", "sm-s908b")) # weirdly bad

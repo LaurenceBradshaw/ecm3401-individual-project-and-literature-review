@@ -9,8 +9,26 @@ device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def get_device() -> torch.device:
     # return device_
     return "cpu" # Tried to use GPU, but only my laptop has an nvidia gpu and its slower than my main desktop cpu.
+    # Plus, the way epochs are layed out, there is no parallelism.
 
 def estimate_clock(epoch_df: pd.DataFrame, pos_truth: torch.Tensor, vel_truth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Estimate the receiver clock bias and drift for a given epoch using the ground truth position and velocity.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The DataFrame containing the satellite observations for the epoch.
+    pos_truth: torch.Tensor
+        The ground truth position of the receiver (ECEF coordinates + clock bias).
+    vel_truth: torch.Tensor
+        The ground truth velocity of the receiver (ECEF velocity + clock drift).
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        A tuple containing the estimated clock bias and clock drift as torch tensors.
+    """
     # TODO: doesn't need to be torch.
     pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float64, device=get_device())
     prr = torch.tensor(epoch_df[PRR_COL].to_numpy(), dtype=torch.float64, device=get_device())
@@ -25,18 +43,33 @@ def estimate_clock(epoch_df: pd.DataFrame, pos_truth: torch.Tensor, vel_truth: t
     return clock_bias, clock_drift
 
 def get_ground_truth(truth_df: pd.DataFrame, epoch_df: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Get the ground truth position and velocity for a given epoch by finding the closest timestamp in the truth DataFrame.
+
+    Parameters
+    ----------
+    truth_df: pd.DataFrame
+        The DataFrame containing the ground truth positions and velocities with timestamps.
+    epoch_df: pd.DataFrame
+        The DataFrame containing the satellite observations for the epoch, used to find the closest timestamp.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        A tuple containing the ground truth position and velocity as torch tensors.
+    """
     # Find closest ground truth row by time
     gt_row = truth_df.iloc[(truth_df['UnixTimeMillis'] - epoch_df["utcTimeMillis"].mean()).abs().argsort()[:1]]
-    # Convert to ECEF
+    
     pos_truth = lla_to_ecef(
         gt_row[['LatitudeDegrees','LongitudeDegrees','AltitudeMeters']].to_numpy().flatten()
     )
-    # Convert velocity to ECEF
+    # Convert heading and speed into velocity in the ECEF frame
     vel_truth = heading_speed_to_ecef(
         gt_row['BearingDegrees'], gt_row['SpeedMps'],
         gt_row['LatitudeDegrees'], gt_row['LongitudeDegrees']
     )
-    # Convert to tensors
+    
     pos_truth = torch.tensor(pos_truth, dtype=torch.float64, device=get_device())
     vel_truth = torch.tensor(vel_truth, dtype=torch.float64, device=get_device())
 
@@ -53,6 +86,30 @@ def compute_pos_torch(
         prr_correction: torch.Tensor | None,
         curr_pos: dict | None
     ) -> dict:
+    """
+    Given the epoch data and optional weights and corrections, compute the receiver position.
+    This implementation used PyTorch.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The DataFrame containing the satellite observations for the epoch.
+    pr_weights: torch.Tensor | None
+        The weights for the pseudorange measurements.
+    pr_correction: torch.Tensor | None
+        The correction for the pseudorange measurements.
+    prr_weights: torch.Tensor | None
+        The weights for the pseudorange rate measurements.
+    prr_correction: torch.Tensor | None
+        The correction for the pseudorange rate measurements.
+    curr_pos: dict | None
+        The current position estimate.
+
+    Returns
+    -------
+    dict
+        The updated position estimate after processing the epoch.
+    """
     # Grab the required columns and convert to tensors
     pr = torch.tensor(epoch_df[PR_COL].to_numpy(), dtype=torch.float64, device=get_device())
     if pr_correction is not None:
@@ -76,7 +133,30 @@ def compute_pos(
         prr_correction: np.ndarray | None, 
         curr_pos: dict | None
     ) -> dict:
-    # Extract columns once, no torch, no devices
+    """
+    Given the epoch data and optional weights and corrections, compute the receiver position.
+    This implementation uses numpy.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The DataFrame containing the satellite observations for the epoch.
+    pr_weights: np.ndarray | None
+        The weights for the pseudorange measurements.
+    pr_correction: np.ndarray | None
+        The correction for the pseudorange measurements.
+    prr_weights: np.ndarray | None
+        The weights for the pseudorange rate measurements.
+    prr_correction: np.ndarray | None
+        The correction for the pseudorange rate measurements.
+    curr_pos: dict | None
+        The current position estimate.
+
+    Returns
+    -------
+    dict
+        The updated position estimate after processing the epoch.
+    """
     pr = epoch_df[PR_COL].to_numpy(dtype=np.float64)
     if pr_correction is not None:
         pr = pr + pr_correction
@@ -88,11 +168,25 @@ def compute_pos(
     sat_pos = epoch_df[SAT_POS_COLS].to_numpy(dtype=np.float64)
     sat_vel = epoch_df[SAT_VEL_COLS].to_numpy(dtype=np.float64)
 
-    curr_pos = gp.position(pr,prr,sat_pos,sat_vel,Wx=pr_weights,Wv=prr_weights,prev_estimate=curr_pos)
+    curr_pos = gp.position(pr, prr, sat_pos, sat_vel, Wx=pr_weights, Wv=prr_weights, prev_estimate=curr_pos)
 
     return curr_pos
 
 def compute_residual_matrix(epoch_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Computes the leave-one-out pseudorange and pseudorange rate residual matrices for a given epoch.
+    Each entry (i, j) in the residual matrix corresponds to the residual for satellite i when satellite j is excluded from the position solution.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The DataFrame containing the satellite observations for the epoch.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        A tuple containing the pseudorange residual matrix and the pseudorange rate residual matrix, both of
+    """
     n_sats = len(epoch_df)
 
     pr_residual_matrix = np.zeros(
@@ -115,7 +209,7 @@ def compute_residual_matrix(epoch_df: pd.DataFrame) -> tuple[np.ndarray, np.ndar
     )
 
     sat_num = 0
-    for row_idx, sat_row in epoch_df.iterrows():
+    for _, sat_row in epoch_df.iterrows():
         excluded_key = (sat_row["ConstellationType"], sat_row["Svid"], sat_row["SignalType"])
         included_mask = [key != excluded_key for key in sat_keys]
         included_sats = epoch_df[included_mask]

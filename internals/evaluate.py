@@ -9,10 +9,22 @@ from internals.drive_data import Drive
 from internals.coord_systems import ecef_to_lla, errors_haversine, ecef_to_enu_rot
 from internals.gnss_positioning import Kalman_filter
 from internals.constants import PR_COL, PRR_COL, SAT_POS_COLS, SAT_VEL_COLS
-import internals.gnss_positioning as gp
 import internals.common as common
 
 def path_to_name(path_str: str) -> str:
+    """
+    Takes a file path and returns a string combining the last two components of the path, separated by an underscore.
+
+    Parameters
+    ----------
+    path_str: str
+        The input file path.
+
+    Returns
+    -------
+    str
+
+    """
     path = Path(path_str)
     parts = path.parts
 
@@ -22,6 +34,25 @@ def path_to_name(path_str: str) -> str:
     return f"{parts[-2]}_{parts[-1]}"
 
 def compute_position_error_cdf(baseline_positions, nn_positions, truth_positions, num_points=1000):
+    """
+    Computes the cumulative distribution function (CDF) of the position errors for both the baseline and the neural network estimates.
+
+    Parameters
+    ----------
+    baseline_positions: np.ndarray, shape (N, 3)
+        The baseline position estimates in ECEF coordinates.
+    nn_positions: np.ndarray, shape (N, 3)
+        The neural network position estimates in ECEF coordinates.
+    truth_positions: np.ndarray, shape (N, 3)
+        The ground truth positions in ECEF coordinates.
+    num_points: int
+        The number of points to use for the error range in the CDF.
+
+    Returns
+    -------
+    dict
+        A dictionary containing the error range and the corresponding CDF values for both the baseline and neural network estimates.
+    """
     # Compute errors
     baseline_errors = np.linalg.norm(baseline_positions - truth_positions, axis=1)
     nn_errors = np.linalg.norm(nn_positions - truth_positions, axis=1)
@@ -40,6 +71,25 @@ def compute_position_error_cdf(baseline_positions, nn_positions, truth_positions
     }
 
 def print_global_error_all_files(results: list, save_dir: str, kf_string: str, save_postfix: str) -> None:
+    """
+    Aggregates error metrics across all evaluated files and prints global results, 
+    including RMSE and error percentiles for position and velocity estimates, as well as comparisons to baseline performance.
+
+    Parameters
+    ----------
+    results: list
+        A list of dictionaries containing the error metrics for each evaluated file.
+    save_dir: str
+        The directory where the results will be saved.
+    kf_string: str
+        A string representing the Kalman filter configuration.
+    save_postfix: str
+        A postfix for the saved files.
+
+    Returns
+    -------
+    None
+    """
     total = {}
 
     for key in ["horizontal_sse", "vertical_sse", "3d_sse", "horizontal_baseline_sse", "vertical_baseline_sse", "3d_baseline_sse", 
@@ -66,6 +116,7 @@ def print_global_error_all_files(results: list, save_dir: str, kf_string: str, s
     speed_rmse = np.sqrt(total["speed_sse"] / total["speed_count"])
     speed_baseline_rmse = np.sqrt(total["speed_baseline_sse"] / total["speed_count"])
 
+    # This really could have been a function that returns a dict of percentile errors...
     all_pos_horizontal_errors = np.concatenate([r["pos_horizontal_errors"] for r in results])
     all_pos_vertical_errors = np.concatenate([r["pos_vertical_errors"] for r in results])
     all_pos_3d_errors = np.concatenate([r["pos_3d_errors"] for r in results])
@@ -231,6 +282,22 @@ def print_global_error_all_files(results: list, save_dir: str, kf_string: str, s
         f.write(f"Speed P50/P75/P95:                 {speed_p50:.2f} / {speed_p75:.2f} / {speed_p95:.2f} m/s (baseline {speed_baseline_p50:.2f} / {speed_baseline_p75:.2f} / {speed_baseline_p95:.2f} m/s) (improvement {(speed_baseline_p50 - speed_p50)/speed_baseline_p50*100:.2f} / {(speed_baseline_p75 - speed_p75)/speed_baseline_p75*100:.2f} / {(speed_baseline_p95 - speed_p95)/speed_baseline_p95*100:.2f} %)\n")
 
 def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
+    """
+    Setup the neural network model by loading the trained state and prepare it for evaluation.
+
+    Parameters
+    ----------
+    network_cls: torch.nn.Module
+        The class of the neural network model to be evaluated.
+    state_dict: str
+        The file path to the saved state dictionary of the trained model.
+    kf: bool
+        A boolean indicating whether to enable the Kalman filter for post-processing the position estimates.
+
+    Returns
+    -------
+    None
+    """
     global net, features, kf_enabled
     ###############
     kf_enabled = kf
@@ -245,6 +312,28 @@ def setup(network_cls: torch.nn.Module, state_dict: str, kf: bool) -> None:
     net.eval()
 
 def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> None:
+    """
+    Run the evaluation process on the given drive.
+
+    Writes the results to the log file and saves the position estimates and errors to a CSV file in the specified directory.
+    Produces cdf and error plots as well as a folium map of the trajectory and satellite positions.
+
+    Parameters
+    ----------
+    drive: Drive
+        The Drive object containing the data to be evaluated.
+    get_feats: callable
+        A function that takes an epoch DataFrame and returns the features to be fed into the neural
+        network.
+    save_dir: str
+        The directory where the results will be saved.
+    save_postfix: str
+        A postfix for the saved files.
+
+    Returns
+    -------
+    None
+    """
     df, truth_df = drive.get_dataframes()
     N = df['epoch_id'].nunique()
     truth_positions_lla = np.zeros((N, 3))
@@ -290,10 +379,9 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
         pos_truth = pos_truth[:3]
         vel_truth = vel_truth[:3]
         
-        # pos_truth = torch.tensor(pos_truth, dtype=torch.float64, device=common.get_device())
         truth_positions_lla[i, :] = ecef_to_lla(pos_truth.cpu().numpy())
         truth_positions_ecef[i, :] = pos_truth.cpu().numpy()
-        truth_speed[i] = torch.linalg.norm(vel_truth).item() # TODO: Use vel_truth and split horizontal and vertical and 3d like with position.
+        truth_speed[i] = torch.linalg.norm(vel_truth).item()
         truth_velocity[i, :] = vel_truth.cpu().numpy()
         pseudoranges.append({row['sat_identifier']: row[PR_COL] for _, row in epoch_df.iterrows()})
         sat_positions_ecef.append({row['sat_identifier']: row[SAT_POS_COLS].to_numpy() for _, row in epoch_df.iterrows()})
@@ -306,15 +394,6 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
         Wx_baseline = torch.diag(Wx_baseline)
         Wv_baseline = torch.tensor(epoch_df['prr_baseline_weight'].to_numpy(), dtype=torch.float64, device=common.get_device())
         Wv_baseline = torch.diag(Wv_baseline)
-
-        # sigma_elev_pr = (3 / epoch_df['sin_elevation'])**2
-        # sigma_cn0_pr = 5 * np.exp(-epoch_df['Cn0DbHz']/20)
-        # pr_weights_baseline = 1 / (sigma_elev_pr + sigma_cn0_pr + 1e-6)
-        # sigma_elev_prr = (0.1 / epoch_df['sin_elevation'])**2
-        # sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
-        # prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr + 1e-6)
-        # Wx_baseline = torch.diag(torch.tensor(pr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
-        # Wv_baseline = torch.diag(torch.tensor(prr_weights_baseline.to_numpy(), dtype=torch.float64, device=common.get_device()))
 
         baseline_pos = common.compute_pos_torch(epoch_df=epoch_df, pr_weights=Wx_baseline, pr_correction=None, prr_weights=Wv_baseline, prr_correction=None, curr_pos=baseline_pos)
 
@@ -416,7 +495,7 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
                 row["SvPositionZEcefMeters"],
             ])
 
-            sv_lat, sv_lon, sv_alt = ecef_to_lla(sv_ecef)
+            sv_lat, sv_lon, _ = ecef_to_lla(sv_ecef)
             sat_trajectories[key].append((sv_lat, sv_lon))
 
         i += 1
@@ -630,7 +709,6 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
 
     cdf_save_name = os.path.join(save_dir, path_to_name(drive.get_directory_name()) + f"_error_cdf_{kf_string}_{save_postfix}.png")
     cdf_result = compute_position_error_cdf(estimated_positions_baseline_ecef, estimated_positions_ecef, truth_positions_ecef)
-    # plt.figure(figsize=(12, 8))
     plt.figure(figsize=(8, 5))
     plt.plot(cdf_result['error_range'], cdf_result['baseline_cdf'], label='Baseline')
     plt.plot(cdf_result['error_range'], cdf_result['nn_cdf'], label='NN Estimate')
@@ -674,25 +752,10 @@ def run(drive: Drive, get_feats: callable, save_dir: str, save_postfix: str) -> 
     trajectory_df = pd.DataFrame({
         "truth_lat": truth_positions_lla[:,0],
         "truth_lon": truth_positions_lla[:,1],
-        # "truth_alt": truth_positions_lla[:,2],
         "est_lat": estimated_positions_lla[:,0],
         "est_lon": estimated_positions_lla[:,1],
-        # "est_alt": estimated_positions_lla[:,2],
         "est_baseline_lat": estimated_positions_baseline_lla[:,0],
         "est_baseline_lon": estimated_positions_baseline_lla[:,1],
-        # "est_baseline_alt": estimated_positions_baseline_lla[:,2],
-        # "truth_vel_x": truth_velocity[:,0],
-        # "truth_vel_y": truth_velocity[:,1],
-        # "truth_vel_z": truth_velocity[:,2],
-        # "est_vel_x": estimated_velocity[:,0],
-        # "est_vel_y": estimated_velocity[:,1],
-        # "est_vel_z": estimated_velocity[:,2],
-        # "est_baseline_vel_x": estimated_velocity_baseline[:,0],
-        # "est_baseline_vel_y": estimated_velocity_baseline[:,1],
-        # "est_baseline_vel_z": estimated_velocity_baseline[:,2],
-        # "truth_speed": truth_speed,
-        # "est_speed": estimated_speed,
-        # "est_baseline_speed": estimated_speed_baseline,
         "epoch_id": epoch_ids
     })
     trajectory_df.to_csv(trajectory_save_name, index=False)

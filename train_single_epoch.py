@@ -9,6 +9,23 @@ from internals.common import compute_residual_matrix
 from model import Gnss_single_epoch_net, get_training_drives
 
 def get_feats(epoch_df: pd.DataFrame, features: list[str], device: str) -> tuple[torch.Tensor]:
+    """
+    Get the features for the current epoch.
+
+    Parameters
+    ----------
+    epoch_df: pd.DataFrame
+        The DataFrame containing the data for the current epoch.
+    features: list[str]
+        The list of feature names to extract.
+    device: str
+        The device on which to place the tensors.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        A tuple containing the tensor of features and the tensors of residual matrices.
+    """
     feats = epoch_df[features].to_numpy(dtype=np.float64)
     feats = torch.tensor(feats, dtype=torch.float64, device=device)
     pr_res_matrix, prr_res_matrix = compute_residual_matrix(epoch_df)

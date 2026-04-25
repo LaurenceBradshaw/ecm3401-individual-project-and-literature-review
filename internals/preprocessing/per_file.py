@@ -12,6 +12,24 @@ HASH_FILE = "preprocess_per_file_hash_table.json"
 
 
 def validate_satellite_data(df: pd.DataFrame, sat_identifier: str, sat_df: pd.DataFrame) -> None:
+    """
+    Validate that the satellite motion and pr/prr data is reasonable, and flag any suspicious epochs.
+    If there is a motion issue, it will be repaired by interpolation.
+    If there is a pr/prr issue, the troublesome epoch will be removed.
+
+    Parameters
+    ----------
+    df: pd.DataFrame
+        The main dataframe containing all satellite data for the drive, where flags will be added.
+    sat_identifier: str
+        The identifier for the satellite being validated.
+    sat_df: pd.DataFrame
+        The dataframe containing data for the specific satellite.
+
+    Returns
+    -------
+    None
+    """
     # Pretty arbitrary thresholds. Very generous to avoid removing actual fluctuations in the data
     MAX_SAT_JUMP_KM = 200.0
     MAX_SAT_SPEED_MPS = 18000.0
@@ -91,88 +109,20 @@ def validate_satellite_data(df: pd.DataFrame, sat_identifier: str, sat_df: pd.Da
             interp_vals = np.interp(t, good_times, good_vals)
             df.loc[idx, col] = interp_vals
 
-
-def reconstruct_phase_from_adr(adr_m, wavelength):
-    adr = np.array(adr_m, dtype=np.float64)
-
-    delta_adr = np.diff(adr, prepend=adr[0])
-    delta_phi = 2.0 * math.pi * (delta_adr / wavelength)
-
-    phase_unwrapped = np.cumsum(delta_phi)
-    phase_wrapped = (phase_unwrapped + math.pi) % (2.0 * math.pi) - math.pi
-
-    return phase_unwrapped, phase_wrapped
-
-def reconstruct_phase_from_rate(pr_rate_m_s, timestamps_s, wavelength):
-    pr_rate = np.array(pr_rate_m_s, dtype=np.float64)
-
-    phase_rate = -2.0 * math.pi * pr_rate / wavelength
-    dt = np.diff(timestamps_s, prepend=timestamps_s[0])
-
-    phase_unwrapped = np.cumsum(phase_rate * dt)
-    phase_wrapped = (phase_unwrapped + math.pi) % (2.0 * math.pi) - math.pi
-
-    return phase_unwrapped, phase_wrapped
-
-def differentiate(phi, timestamps_s):
-    # robust derivative for irregular timestamps (returns rad/s)
-    ts = np.array(timestamps_s, dtype=np.float64)
-    phi = np.array(phi, dtype=np.float64)
-    dt = np.diff(ts, prepend=ts[0])
-    # protect against zero dt (leave derivative zero)
-    dt[dt == 0] = np.nan
-    dphi = np.diff(phi, prepend=phi[0])
-    dphi_dt = dphi / dt
-    # replace nan with zero
-    dphi_dt = np.nan_to_num(dphi_dt)
-    return dphi_dt
-
-def reconstruct_phase_data(df: pd.DataFrame, sat_df: pd.DataFrame) -> None:
-    time_nanos = sat_df["TimeNanos"].to_numpy()
-    full_bias_nanos = sat_df["FullBiasNanos"].to_numpy()[0]
-    time_offset_nanos = sat_df["TimeOffsetNanos"].to_numpy()
-    adr_m = sat_df["AccumulatedDeltaRangeMeters"].to_numpy()
-    pr_rate_m_s = sat_df["PseudorangeRateMetersPerSecond"].to_numpy()
-    wavelength = sat_df["wavelength"].to_numpy()[0]
-
-    # timestamps in seconds
-    timestamps_s = (time_nanos - float(full_bias_nanos) + time_offset_nanos) * 1e-9
-
-    # phase from ADR
-    phase_adr_unwrapped, phase_adr_wrapped = reconstruct_phase_from_adr(
-        adr_m=adr_m,
-        wavelength=wavelength
-    )
-
-    # phase from pseudorange rate
-    phase_rate_unwrapped, phase_rate_wrapped = reconstruct_phase_from_rate(
-        pr_rate_m_s=pr_rate_m_s,
-        timestamps_s=timestamps_s,
-        wavelength=wavelength
-    )
-
-    phase_adr_unwrapped_rate = differentiate(phase_adr_unwrapped, timestamps_s)
-    phase_rate_unwrapped_rate = differentiate(phase_rate_unwrapped, timestamps_s)
-
-    df.loc[sat_df.index, 'phase_adr_unwrapped_rate'] = phase_adr_unwrapped_rate
-    df.loc[sat_df.index, 'phase_rate_unwrapped_rate'] = phase_rate_unwrapped_rate
-    df.loc[sat_df.index, 'phase_adr_wrapped'] = phase_adr_wrapped
-    df.loc[sat_df.index, 'phase_rate_wrapped'] = phase_rate_wrapped
-    df.loc[sat_df.index, 'sin_phase_adr_wrapped'] = np.sin(phase_adr_wrapped)
-    df.loc[sat_df.index, 'cos_phase_adr_wrapped'] = np.cos(phase_adr_wrapped)
-    df.loc[sat_df.index, 'sin_phase_rate_wrapped'] = np.sin(phase_rate_wrapped)
-    df.loc[sat_df.index, 'cos_phase_rate_wrapped'] = np.cos(phase_rate_wrapped)
-
 def map_adr_state(state_int):
     """
     Convert ADR state bits to state.
     State map comes from accumulated_delta_range_state_bit_map.json in the dataset.
 
-    Args:
-        state_int: Integer representing the state bitmask
+    Parameters
+    ----------
+    state_int: int
+        Integer representing the ADR state bitmask.
 
-    Returns:
-        dict: ADR state flags
+    Returns
+    -------
+    dict
+        A dictionary with keys representing the state flags and boolean values.
     """
     adr_state = {
         'valid': False,
@@ -199,11 +149,15 @@ def map_to_generic_state(state_int):
     Convert constellation-specific state bits to generic tracking states.
     State map comes from raw_state_bit_map.json in the dataset.
     
-    Args:
-        state_int: Integer representing the state bitmask
-        
-    Returns:
-        dict: Generic state flags
+    Parameters
+    ----------
+    state_int: int
+        Integer representing the raw state bitmask.
+
+    Returns
+    -------
+    dict
+        A dictionary with keys representing the generic state flags and boolean values.
     """
     # Initialize all to False
     generic_state = {
@@ -240,11 +194,24 @@ def map_to_generic_state(state_int):
     return generic_state
 
 def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch_manager: Epoch_manager) -> None:
-    # Cn0 model
-    cn0 = sat_row['Cn0DbHz']
-    el = sat_row['sin_elevation']
-    cn0_over_sine = cn0 / np.maximum(el, 0.1) # Avoid division by zero
-    df.loc[sat_id, 'cn0_over_sine'] = cn0_over_sine
+    """
+    Compute various features for a satellite.
+
+    Parameters
+    ----------
+    df: pd.DataFrame
+        The dataframe containing all satellite data for the drive, where new features will be added.
+    sat_id: int
+        The index of the satellite in the dataframe to calculate features for.
+    sat_row: pd.Series
+        The row containing data for the specific satellite.
+    epoch_manager: Epoch_manager
+        The manager for handling epoch-based operations.
+
+    Returns
+    -------
+    None
+    """
 
     # Generic state mapping
     state = sat_row['State']
@@ -262,6 +229,7 @@ def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch
     pr = sat_row[PR_COL]
     prr = sat_row[PRR_COL]
     adr = sat_row['AccumulatedDeltaRangeMeters']
+    cn0 = sat_row['Cn0DbHz']
 
     epoch_manager.add_entry(sat_identifier, {'cn0': cn0, 'pr': pr, 'prr': prr, 'adr': adr})
     epoch_window = epoch_manager.get_history(sat_identifier)
@@ -282,39 +250,23 @@ def calc_satellite_data(df: pd.DataFrame, sat_id: int, sat_row: pd.Series, epoch
     prr_stability = 1.0 / prr_std if prr_std > 1e-3 else 0.0
     df.loc[sat_id, 'prr_stability'] = prr_stability
 
-def compute_prr_baseline_weight(sat_samples: dict, row: pd.Series) -> float:
-    sat_key = (row['ConstellationType'], row['Svid'])
-    res = row['doppler_residual']
-    b = row['Cn0DbHz'] 
-    
-    # Initialise per-satellite list if needed
-    if sat_key not in sat_samples:
-        sat_samples[sat_key] = []
-    
-    # Add current residual to satellite history
-    sat_samples[sat_key].append(res)
-    
-    # Use last N samples for batch variance (or all if fewer than N)
-    samples = sat_samples[sat_key][-50:] # e.g., last 50 residuals
-    N = len(samples)
-    
-    if N > 1:
-        s2 = np.var(samples, ddof=1) # unbiased sample variance
-    else:
-        s2 = 1e-3 # default small value for new satellite
-    
-    # Compute mean geometry and mean noise scale for the batch
-    sin2a = 1/row['sin_elevation']**2
-    c = 10**(-b/10)
-    
-    # Estimate k using batch residual formula
-    k_hat = max(s2 - sin2a * c, 1e-6) # clamp to positive
-    
-    # Compute sigma^2 for weight
-    sigma2 = sin2a + k_hat * c
-    return 1.0 / sigma2
-
 def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: dict) -> None:
+    """
+    Calculate epoch-level statistics and weights for the satellites in the epoch.
+
+    Parameters
+    ----------
+    df: pd.DataFrame
+        The dataframe containing all satellite data for the drive, where new features will be added.
+    epoch_df: pd.DataFrame
+        The dataframe containing data for the current epoch.
+    curr_pos: dict
+        The current receiver position estimate.
+
+    Returns
+    -------
+    None
+    """
     # elevation rank for all satellites in this epoch
     elevation_rank = epoch_df['SvElevationDegrees'].rank(ascending=False).to_numpy()
     df.loc[epoch_df.index, 'elevation_rank'] = elevation_rank
@@ -335,9 +287,6 @@ def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: d
     res = gp.pr_residuals(x, sat_pos, pr)
     df.loc[epoch_df.index, 'residual'] = res
 
-    rms_residual = np.sqrt(np.mean(res**2))
-    df.loc[epoch_df.index, 'rms_residual'] = rms_residual
-
     v = np.zeros(4)
     v[:3] = curr_pos['velocity']
     v[3] = curr_pos['clock_drift']
@@ -356,7 +305,20 @@ def calc_epoch_level_stats(df: pd.DataFrame, epoch_df: pd.DataFrame, curr_pos: d
     df.loc[epoch_df.index, 'doppler_residual'] = D_res
     epoch_df.loc[epoch_df.index, 'doppler_residual'] = D_res
 
-def adr_is_usable(adr_state):
+def adr_is_usable(adr_state: dict) -> bool:
+    """
+    Check if the Accumulated Delta Range state is usable.
+
+    Parameters
+    ----------
+    adr_state: dict
+        The Accumulated Delta Range state.
+
+    Returns
+    -------
+    bool
+        True if the state is usable, False otherwise.
+    """
     return (
         adr_state['valid']
         and not adr_state['reset']
@@ -364,9 +326,37 @@ def adr_is_usable(adr_state):
     )
 
 def per_file_hash():
+    """
+    Compute a hash representing the current state of this file.
+
+    Returns
+    -------
+    str
+        The hash of this file.
+    """
     return hash_file(__file__)
 
 def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) -> None:
+    """
+    Process a single drive file and compute all the necessary features, flags, subsets, etc.
+
+    This function is long and not very nice. It is a product of the evolution of the preprocessing script.
+
+    Parameters
+    ----------
+    drive: Drive
+        The drive to be processed.
+    drive_i: int
+        The index of the current drive.
+    n_drives: int
+        The total number of drives to process.
+    hash_table: dict
+        A dictionary mapping drive directory names to their hashes.
+
+    Returns
+    -------
+    None
+    """
     # Hash of this python file
     hash = hash_file(__file__)
 
@@ -377,7 +367,7 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
     
     print(f"[{drive_i+1}/{n_drives}] Pre-processing file: {drive.get_directory_name()}")
     drive_i += 1
-    df, truth_df = drive.get_dataframes()
+    df, _ = drive.get_dataframes()
     
     df["epoch_id"] = df.groupby('utcTimeMillis').ngroup()
     # Filter to L1 frequency band only. L5 is a pain
@@ -461,7 +451,6 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
     # Process each satellite individually for all epochs
     for (constellation, svid), sat_df in df.groupby(['ConstellationType', 'Svid']):
         validate_satellite_data(df, sat_df['sat_identifier'].values[0], sat_df)
-        reconstruct_phase_data(df, sat_df)
 
     # Remove rows marked as bad_satellite, since interpolation on the sat pos/vel is not sufficient
     df = df[df['sat_flag'] != 'bad_satellite']
@@ -477,8 +466,6 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
     assert not duplicate_epochs.any(), "Duplicate satellite entries still exist after resolution."
     
     curr_pos = None
-    curr_pos_weighted = None
-    sat_samples = {}
     epoch_manager = Epoch_manager(max_history=10)
     # Process each epoch individually
     print("Calculating epoch-level statistics and weights...")
@@ -494,19 +481,10 @@ def process_file(drive: Drive, drive_i: int, n_drives: int, hash_table: dict) ->
         sigma_cn0_prr = 0.05 * np.exp(-epoch_df['Cn0DbHz']/20)
         prr_weights_baseline = 1 / (sigma_elev_prr + sigma_cn0_prr + 1e-6)
         df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
-        # pr_weights_baseline = 1 / ((1/epoch_df['sin_elevation'])**2 + (4*10**(-epoch_df['Cn0DbHz']/30))**2)
-        # prr_weights_baseline = np.zeros(len(epoch_df))
-        # i = 0
 
         # For each satellite in epoch
         for sat_id, sat_row in epoch_df.iterrows():
             calc_satellite_data(df, sat_id, sat_row, epoch_manager)
-            # prr_weights_baseline[i] = compute_prr_baseline_weight(sat_samples, sat_row)
-            # i += 1
-            
-            
-        # Save weights back to DataFrame
-        # df.loc[epoch_df.index, 'prr_baseline_weight'] = prr_weights_baseline
 
     prev_epoch = None
     df['adr_td_residual'] = 0.0

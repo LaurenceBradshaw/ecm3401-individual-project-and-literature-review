@@ -10,9 +10,22 @@ from internals.preprocessing.focused_subsets import create_focused_subset
 from internals.preprocessing.focused_subsets import HASH_FILE as FOCUSED_SUBSETS_HASH_FILE
 from internals.preprocessing.find_test_set import find_test_set
 
-# This file is wildly inefficient since it loops through the data multiple times.
+# This process is wildly inefficient since it loops through the data multiple times...
 
 def load_hash_table(file_name: str) -> dict:
+    """
+    Load a hash table from a JSON file.
+
+    Parameters
+    ----------
+    file_name: str
+        The name of the JSON file containing the hash table.
+
+    Returns
+    -------
+    dict
+        The loaded hash table, or an empty dictionary if the file does not exist.
+    """
     hash_dir = preprocessing_artifacts_path()
     if not os.path.exists(os.path.join(hash_dir, file_name)):
         return {}
@@ -21,11 +34,39 @@ def load_hash_table(file_name: str) -> dict:
             return json.load(f)
         
 def write_hash_table(file_name: str, hash_table: dict) -> None:
+    """
+    Write a hash table to a JSON file.
+
+    Parameters
+    ----------
+    file_name: str
+        The name of the JSON file to write the hash table to.
+    hash_table: dict
+        The hash table to write to the JSON file.
+
+    Returns
+    -------
+    None
+    """
     hash_dir = preprocessing_artifacts_path()
     with open(os.path.join(hash_dir, file_name), "w") as f:
         json.dump(hash_table, f)
 
 def save_string_list(file_path: str, string_list: list[str]) -> None:
+    """
+    Save a list of strings to a text file.
+
+    Parameters
+    ----------
+    file_path: str
+        The path to the text file to save the strings to.
+    string_list: list[str]
+        The list of strings to save to the text file.
+    
+    Returns
+    -------
+    None
+    """
     with open(file_path, "w", encoding="utf-8") as f:
         for item in string_list:
             f.write(item)
@@ -97,12 +138,3 @@ if __name__ == "__main__":
     print(f"Selected test drives: {test_drives}")
     hash_dir = preprocessing_artifacts_path() # Put in here and treat as preprocessing artefact.
     save_string_list(os.path.join(hash_dir, "test_drives.txt"), test_drives)
-
-    
-
-        
-
-
-
-    
-    

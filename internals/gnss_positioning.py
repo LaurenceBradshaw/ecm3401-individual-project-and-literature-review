@@ -18,10 +18,8 @@ def los_vector(xusr: np.ndarray, xsat: np.ndarray) -> tuple[np.ndarray, np.ndarr
     
     Returns
     -------
-    u : ndarray, shape (n_sat, 3)
-        Unit LOS vectors
-    rng : ndarray, shape (n_sat,)
-        Ranges
+    Tuple[ndarray, ndarray]
+        A tuple containing the unit LOS vectors and ranges.
     """
     n = xsat.shape[0]
     u = np.empty((n, 3), dtype=np.float64)
@@ -57,8 +55,8 @@ def jacobian_residuals(x: np.ndarray, xsat: np.ndarray) -> np.ndarray:
     
     Returns
     -------
-    J : ndarray, shape (n_sat, 4)
-        Jacobian matrix
+    ndarray, shape (n_sat, 4)
+        Jacobian matrix of residuals with respect to state.
     """
     u, _ = los_vector(x[:3], xsat)
     n = xsat.shape[0]
@@ -89,7 +87,8 @@ def pr_residuals(x: np.ndarray, xsat: np.ndarray, pr: np.ndarray) -> np.ndarray:
     
     Returns
     -------
-    residuals : ndarray, shape (n_sat,)
+    ndarray, shape (n_sat,)
+        Pseudorange residuals.
     """
     _, rng = los_vector(x[:3], xsat)
     n = xsat.shape[0]
@@ -126,7 +125,8 @@ def prr_residuals(v: np.ndarray, vsat: np.ndarray, prr: np.ndarray, x: np.ndarra
     
     Returns
     -------
-    residuals : ndarray, shape (n_sat,)
+    ndarray, shape (n_sat,)
+        Pseudorange rate residuals.
     """
     u, _ = los_vector(x[:3], xsat)
     n = xsat.shape[0]
@@ -150,7 +150,15 @@ def prr_residuals(v: np.ndarray, vsat: np.ndarray, prr: np.ndarray, x: np.ndarra
 
     return residuals
 
-def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, huber_delta: float, max_iters: int=50, tol: float=1e-6):
+def least_squares(
+    v0: np.ndarray, 
+    residuals_func: callable, 
+    jacobian_func: callable, 
+    W: np.ndarray, 
+    huber_delta: float, 
+    max_iters: int=50, 
+    tol: float=1e-6
+) -> np.ndarray:
     """
     Weighted least squares solver using iterative normal equations.
 
@@ -171,8 +179,8 @@ def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, 
 
     Returns
     -------
-    v : np.ndarray, shape (n,)
-        Estimated solution vector.
+    ndarray, shape (n,)
+        Estimated state vector minimizing weighted residuals.
     """
     v = v0.copy()
 
@@ -203,172 +211,6 @@ def least_squares(v0: np.ndarray, residuals_func, jacobian_func, W: np.ndarray, 
 
     return v
 
-def estimate_clock_bias(
-    x_true: np.ndarray,
-    xsat: np.ndarray,
-    pr: np.ndarray
-) -> np.ndarray:
-    m = pr.shape[0]
-    W = np.eye(m, dtype=pr.dtype)
-
-    # Ensure we only use true position
-    x_pos = x_true[:3]
-
-    # Line-of-sight and geometric range
-    u, rng = los_vector(x_pos, xsat)
-
-    # Apply Earth rotation (Sagnac)
-    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
-        xsat[:, 0] * x_pos[1] - xsat[:, 1] * x_pos[0]
-    )
-
-    # Pseudorange error (measured - true geometry)
-    delta_rho = pr - rng
-
-    H = jacobian_residuals(x_true, xsat)
-
-    H_w = W @ H
-    HTH = H_w.T @ H_w
-
-    # Weighted pseudoinverse
-    H_pinv = np.linalg.solve(HTH, H_w.T @ W)  # (4, m)
-
-    # Final row corresponds to clock
-    p_delta_t = H_pinv[3]  # (m,)
-
-    delta_clock_m = p_delta_t @ delta_rho
-
-    return delta_clock_m
-
-def estimate_clock_drift(
-    x_true: np.ndarray,
-    v_true: np.ndarray,
-    xsat: np.ndarray,
-    vsat: np.ndarray,
-    prr: np.ndarray,
-) -> np.ndarray:
-    """
-    Estimate clock drift (c * delta_t_dot) in metres per second
-    via weighted pseudoinverse projection using truth geometry.
-    """
-
-    m = prr.shape[0]
-    W = np.eye(m, dtype=prr.dtype)
-
-    # True LOS vectors
-    u, _ = los_vector(x_true[:3], xsat)
-
-    # True geometric range rate
-    rate = np.zeros(m, dtype=prr.dtype)
-
-    for i in range(m):
-        rate[i] = np.dot(vsat[i, :3] - v_true[:3], u[i])
-        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
-            vsat[i, 1] * x_true[0]
-            + xsat[i, 1] * v_true[0]
-            - vsat[i, 0] * x_true[1]
-            - xsat[i, 0] * v_true[1]
-        )
-
-    # Pseudorange rate error (measured - true geometry)
-    delta_rho_dot = prr - rate
-
-    # PRR Jacobian wrt velocity state
-    H = np.zeros((m, 4), dtype=prr.dtype)
-    H[:, :3] = -u
-    H[:, 3] = 1.0
-
-    # Weighted pseudoinverse
-    H_w = W @ H
-    HTH = H_w.T @ H_w
-    H_pinv = np.linalg.solve(HTH, H_w.T @ W)
-
-    # Clock drift row
-    p_delta_t_dot = H_pinv[3]
-
-    delta_clock_drift_mps = p_delta_t_dot @ delta_rho_dot
-
-    return delta_clock_drift_mps
-
-##########################################################################################
-#
-# The following are PyTorch versions of the above functions for use with pytorch autograd.
-# They mirror the other implementations but use torch tensors and maths functions.
-# Torch tensors shouldn't be used normally since they are slower to work with.
-#
-##########################################################################################
-
-def los_vector_torch(xusr: torch.Tensor, xsat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    u = xsat - xusr.view(1, 3)
-    rng = torch.norm(u, dim=1)
-    u = u / rng.view(-1, 1)
-    return u, rng
-
-def jacobian_residuals_torch(x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
-    u, _ = los_vector_torch(x[:3], xsat)
-    J = torch.zeros((xsat.shape[0], 4), dtype=x.dtype, device=x.device)
-    J[:, 0] = -u[:, 0] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 1]
-    J[:, 1] = -u[:, 1] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 0]
-    J[:, 2] = -u[:, 2]
-    J[:, 3] = 1.0
-    return J
-
-def pr_residuals_torch(x: torch.Tensor, xsat: torch.Tensor, pr: torch.Tensor) -> torch.Tensor:
-    _, rng = los_vector_torch(x[:3], xsat)
-    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (xsat[:, 0] * x[1] - xsat[:, 1] * x[0])
-    residuals = rng - (pr - x[3])
-    return residuals
-
-def prr_residuals_torch(v: torch.Tensor, vsat: torch.Tensor, prr: torch.Tensor, x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
-    u, _ = los_vector_torch(x[:3], xsat)
-    rate = torch.zeros(xsat.shape[0], dtype=x.dtype, device=x.device)
-
-    for i in range(xsat.shape[0]):
-        rel_vel = vsat[:, :3] - v[:3].unsqueeze(0)          # (m, 3)
-        rate = (rel_vel * u).sum(dim=1)                       # (m,)
-        rate += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
-            vsat[:, 1] * x[0] + xsat[:, 1] * v[0]
-        - vsat[:, 0] * x[1] - xsat[:, 0] * v[1]
-        )
-
-    residuals = rate - (prr - v[3])
-    return residuals
-
-def least_squares_torch(v0: torch.Tensor, residuals_func, jacobian_func, W: torch.Tensor, huber_delta: float, max_iters: int=50, tol: float=1e-6) -> torch.Tensor:
-    v = v0.clone()
-
-    for _ in range(max_iters):
-        r = residuals_func(v)           # shape (m,)
-        H = jacobian_func(v)            # shape (m, n)
-
-        # Compute Huber weights (elementwise, differentiable)
-        abs_r = torch.abs(r)
-        huber_w = torch.where(abs_r <= huber_delta, torch.ones_like(r), huber_delta / (abs_r + 1e-8))
-        # huber_w = huber_delta / (torch.sqrt(r**2 + huber_delta**2) + 1e-8)
-        huber_w.detach()
-
-        # Multiply the diagonal elements of W by huber weights
-        W_huber = W.clone()
-        W_huber_diag = torch.diagonal(W_huber) * huber_w
-        W_huber = torch.diag(W_huber_diag)  # rebuild diagonal matrix
-
-        # Apply weighted residuals and Jacobian
-        r_w = W_huber @ r
-        H_w = W_huber @ H
-
-        # Solve normal equations: (H^T H) delta = -H^T r
-        sol = torch.linalg.lstsq(H_w, -r_w)
-        delta = sol.solution           # (n,)
-
-        v_new = v + delta
-        
-        if delta.norm() < tol:
-            v = v_new
-            break
-
-        v = v_new
-        
-    return v
 
 def calculate_dop(position: np.ndarray, H: np.ndarray, W: np.ndarray) -> dict:
     """
@@ -385,8 +227,8 @@ def calculate_dop(position: np.ndarray, H: np.ndarray, W: np.ndarray) -> dict:
 
     Returns
     -------
-    dop : dict
-        Dictionary with keys: 'pdop', 'tdop', 'gdop', 'hdop', 'vdop'
+    dict
+        A dictionary containing PDOP, TDOP, GDOP, HDOP, and VDOP values.
     """
     n_sats = H.shape[0]
     if n_sats < 4:
@@ -422,46 +264,7 @@ def calculate_dop(position: np.ndarray, H: np.ndarray, W: np.ndarray) -> dict:
 
     return dop
 
-def calculate_dop_torch(
-    position: torch.Tensor, 
-    H: torch.Tensor, 
-    W: torch.Tensor
-) -> dict:
-    n_sats = H.shape[0]
-    if n_sats < 4:
-        print("Warning: Not enough satellites for DOP calculation")
-        return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
 
-    try:
-        cov_matrix = torch.linalg.inv(H.T @ W @ H)
-    except torch.linalg.LinAlgError:
-        print("Warning: Singular matrix in DOP calculation")
-        return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
-
-    sigma_x2, sigma_y2, sigma_z2, sigma_t2 = (
-        cov_matrix[0, 0], cov_matrix[1, 1], 
-        cov_matrix[2, 2], cov_matrix[3, 3]
-    )
-
-    pdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2)
-    tdop = torch.sqrt(sigma_t2)
-    gdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2 + sigma_t2)
-
-    # Warning, breaks autograd - but so far isn't used in a way that requires gradients
-    ecef_to_enu = torch.tensor(coords.ecef_to_enu_rot(position.detach().numpy()), dtype=torch.float64)
-    pos_cov = cov_matrix[0:3, 0:3]
-    enu_cov = ecef_to_enu @ pos_cov @ ecef_to_enu.T
-
-    hdop = torch.sqrt(enu_cov[0, 0] + enu_cov[1, 1])
-    vdop = torch.sqrt(enu_cov[2, 2])
-
-    return {
-        'pdop': pdop.item(),
-        'tdop': tdop.item(),
-        'gdop': gdop.item(),
-        'hdop': hdop.item(),
-        'vdop': vdop.item()
-    }
 
 def position(
     pr: np.ndarray,
@@ -487,7 +290,8 @@ def position(
 
     Returns
     -------
-    new_pos : dict with keys 'position', 'velocity', 'clock_bias', 'clock_drift', 'dop'
+    Dict
+        A dictionary containing the new position, velocity, clock bias, clock drift, and DOP values.
     """
 
     # Previous estimate fallback
@@ -563,6 +367,362 @@ def position(
 
     return new_pos
 
+def estimate_clock_bias(
+    x_true: np.ndarray,
+    xsat: np.ndarray,
+    pr: np.ndarray
+) -> np.ndarray:
+    """
+    Estimate clock bias (c * delta_t) in metres via weighted pseudoinverse projection using truth geometry.
+    
+    Parameters
+    ----------
+    x_true: ndarray, shape (4,)
+        True state vector [x, y, z, clock_bias].
+    xsat: ndarray, shape (n_sat, 3)
+        Satellite positions.
+    pr: ndarray, shape (n_sat,)
+        Measured pseudoranges.
+
+    Returns
+    -------
+    ndarray
+        Estimated clock bias in metres.
+    """
+    m = pr.shape[0]
+    W = np.eye(m, dtype=pr.dtype)
+
+    # Ensure we only use true position
+    x_pos = x_true[:3]
+
+    # Line-of-sight and geometric range
+    _, rng = los_vector(x_pos, xsat)
+
+    # Apply Earth rotation (Sagnac)
+    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+        xsat[:, 0] * x_pos[1] - xsat[:, 1] * x_pos[0]
+    )
+
+    # Pseudorange error (measured - true geometry)
+    delta_rho = pr - rng
+
+    H = jacobian_residuals(x_true, xsat)
+
+    H_w = W @ H
+    HTH = H_w.T @ H_w
+
+    # Weighted pseudoinverse
+    H_pinv = np.linalg.solve(HTH, H_w.T @ W)  # (4, m)
+
+    # Final row corresponds to clock
+    p_delta_t = H_pinv[3]  # (m,)
+
+    delta_clock_m = p_delta_t @ delta_rho
+
+    return delta_clock_m
+
+def estimate_clock_drift(
+    x_true: np.ndarray,
+    v_true: np.ndarray,
+    xsat: np.ndarray,
+    vsat: np.ndarray,
+    prr: np.ndarray,
+) -> np.ndarray:
+    """
+    Estimate clock drift (c * delta_t_dot) in metres per second via weighted pseudoinverse projection using truth geometry.
+
+    Parameters
+    ----------
+    x_true: ndarray, shape (4,)
+        True state vector [x, y, z, clock_bias].
+    v_true: ndarray, shape (4,)
+        True velocity vector [vx, vy, vz, clock_drift].
+    xsat: ndarray, shape (n_sat, 3)
+        Satellite positions.
+    vsat: ndarray, shape (n_sat, 3)
+        Satellite velocities.
+    prr: ndarray, shape (n_sat,)
+        Measured pseudorange rates.
+
+    Returns
+    -------
+    ndarray
+        Estimated clock drift in metres per second.
+    """
+
+    m = prr.shape[0]
+    W = np.eye(m, dtype=prr.dtype)
+
+    # True LOS vectors
+    u, _ = los_vector(x_true[:3], xsat)
+
+    # True geometric range rate
+    rate = np.zeros(m, dtype=prr.dtype)
+
+    for i in range(m):
+        rate[i] = np.dot(vsat[i, :3] - v_true[:3], u[i])
+        rate[i] += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[i, 1] * x_true[0]
+            + xsat[i, 1] * v_true[0]
+            - vsat[i, 0] * x_true[1]
+            - xsat[i, 0] * v_true[1]
+        )
+
+    # Pseudorange rate error (measured - true geometry)
+    delta_rho_dot = prr - rate
+
+    # PRR Jacobian wrt velocity state
+    H = np.zeros((m, 4), dtype=prr.dtype)
+    H[:, :3] = -u
+    H[:, 3] = 1.0
+
+    # Weighted pseudoinverse
+    H_w = W @ H
+    HTH = H_w.T @ H_w
+    H_pinv = np.linalg.solve(HTH, H_w.T @ W)
+
+    # Clock drift row
+    p_delta_t_dot = H_pinv[3]
+
+    delta_clock_drift_mps = p_delta_t_dot @ delta_rho_dot
+
+    return delta_clock_drift_mps
+
+##########################################################################################
+#
+# The following are PyTorch versions of the above functions for use with pytorch autograd.
+# They mirror the other implementations but use torch tensors and maths functions.
+# Torch tensors shouldn't be used normally since they are slower to work with.
+#
+##########################################################################################
+
+def los_vector_torch(xusr: torch.Tensor, xsat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Calculate line-of-sight vector and geometric range between user and satellites.
+
+    Parameters
+    ----------
+    xusr : torch.Tensor, shape (3,)
+        User position.
+    xsat : torch.Tensor, shape (n_sat, 3)
+        Satellite positions.
+
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        A tuple containing the unit LOS vectors and ranges.
+    """
+    u = xsat - xusr.view(1, 3)
+    rng = torch.norm(u, dim=1)
+    u = u / rng.view(-1, 1)
+    return u, rng
+
+def jacobian_residuals_torch(x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
+    """
+    Compute Jacobian of pseudorange residuals
+
+    Parameters
+    ----------
+    x : torch.Tensor, shape (4,)
+        State vector [x, y, z, clock_bias]
+    xsat : torch.Tensor, shape (n_sat, 3)
+        Satellite positions
+
+    Returns
+    -------
+    torch.Tensor, shape (n_sat, 4)
+        Jacobian matrix of residuals with respect to state.
+    """
+    u, _ = los_vector_torch(x[:3], xsat)
+    J = torch.zeros((xsat.shape[0], 4), dtype=x.dtype, device=x.device)
+    J[:, 0] = -u[:, 0] - EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 1]
+    J[:, 1] = -u[:, 1] + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * xsat[:, 0]
+    J[:, 2] = -u[:, 2]
+    J[:, 3] = 1.0
+    return J
+
+def pr_residuals_torch(x: torch.Tensor, xsat: torch.Tensor, pr: torch.Tensor) -> torch.Tensor:
+    """
+    Compute pseudorange residuals.
+
+    Parameters
+    ----------
+    x : torch.Tensor, shape (4,)
+        State vector [x, y, z, clock_bias]
+    xsat : torch.Tensor, shape (n_sat, 3)
+        Satellite positions
+    pr : torch.Tensor, shape (n_sat,)
+        Measured pseudoranges
+
+    Returns
+    -------
+    torch.Tensor, shape (n_sat,)
+        Pseudorange residuals.
+    """
+    _, rng = los_vector_torch(x[:3], xsat)
+    rng = rng + EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (xsat[:, 0] * x[1] - xsat[:, 1] * x[0])
+    residuals = rng - (pr - x[3])
+    return residuals
+
+def prr_residuals_torch(v: torch.Tensor, vsat: torch.Tensor, prr: torch.Tensor, x: torch.Tensor, xsat: torch.Tensor) -> torch.Tensor:
+    """
+    Compute pseudorange rate residuals.
+
+    Parameters
+    ----------
+    v : torch.Tensor, shape (4,)
+        Velocity vector [vx, vy, vz, clock_drift]
+    vsat : torch.Tensor, shape (n_sat, 3)
+        Satellite velocities
+    prr : torch.Tensor, shape (n_sat,)
+        Measured pseudorange rates
+    x : torch.Tensor, shape (4,)
+        State vector [x, y, z, clock_bias]
+    xsat : torch.Tensor, shape (n_sat, 3)
+        Satellite positions
+
+    Returns
+    -------
+    torch.Tensor, shape (n_sat,)
+        Pseudorange rate residuals.
+    """
+    u, _ = los_vector_torch(x[:3], xsat)
+    rate = torch.zeros(xsat.shape[0], dtype=x.dtype, device=x.device)
+
+    for i in range(xsat.shape[0]):
+        rel_vel = vsat[:, :3] - v[:3].unsqueeze(0)          # (m, 3)
+        rate = (rel_vel * u).sum(dim=1)                       # (m,)
+        rate += EARTH_ROTATION_SPEED / SPEED_OF_LIGHT * (
+            vsat[:, 1] * x[0] + xsat[:, 1] * v[0]
+        - vsat[:, 0] * x[1] - xsat[:, 0] * v[1]
+        )
+
+    residuals = rate - (prr - v[3])
+    return residuals
+
+def least_squares_torch(
+    v0: torch.Tensor, 
+    residuals_func: callable, 
+    jacobian_func: callable, 
+    W: torch.Tensor, 
+    huber_delta: float, 
+    max_iters: int=50, 
+    tol: float=1e-6
+) -> torch.Tensor:
+    """
+    Weighted least squares solver using iterative normal equations.
+
+    Parameters
+    ----------
+    v0 : torch.Tensor, shape (n,)
+        Initial guess.
+    residuals_func : callable
+        Function returning residuals vector r(v), shape (m,).
+    jacobian_func : callable
+        Function returning Jacobian matrix H(v), shape (m, n).
+    W : torch.Tensor, shape (m, m)
+        Weight matrix (assumed symmetric positive definite).
+    huber_delta : float
+        Huber loss delta parameter for robust weighting.
+    max_iters : int
+        Maximum number of iterations.
+    tol : float
+        Convergence tolerance on delta norm.
+
+    Returns
+    -------
+    torch.Tensor, shape (n,)
+        Estimated state vector minimizing weighted residuals.
+    """
+    v = v0.clone()
+
+    for _ in range(max_iters):
+        r = residuals_func(v)           # shape (m,)
+        H = jacobian_func(v)            # shape (m, n)
+
+        # Compute Huber weights (elementwise, differentiable)
+        abs_r = torch.abs(r)
+        huber_w = torch.where(abs_r <= huber_delta, torch.ones_like(r), huber_delta / (abs_r + 1e-8))
+        # huber_w = huber_delta / (torch.sqrt(r**2 + huber_delta**2) + 1e-8)
+        huber_w.detach()
+
+        # Multiply the diagonal elements of W by huber weights
+        W_huber = W.clone()
+        W_huber_diag = torch.diagonal(W_huber) * huber_w
+        W_huber = torch.diag(W_huber_diag)  # rebuild diagonal matrix
+
+        # Apply weighted residuals and Jacobian
+        r_w = W_huber @ r
+        H_w = W_huber @ H
+
+        # Solve normal equations: (H^T H) delta = -H^T r
+        sol = torch.linalg.lstsq(H_w, -r_w)
+        delta = sol.solution           # (n,)
+
+        v_new = v + delta
+        
+        if delta.norm() < tol:
+            v = v_new
+            break
+
+        v = v_new
+        
+    return v
+
+def calculate_dop_torch(position: torch.Tensor, H: torch.Tensor, W: torch.Tensor) -> dict:
+    """
+    Calculate Dilution of Precision (DOP) from geometry matrix and weights.
+
+    Parameters
+    ----------
+    position : torch.Tensor, shape (3,)
+        Receiver ECEF position (x, y, z).
+    H : torch.Tensor, shape (n_sats, 4)
+        Geometry (Jacobian) matrix.
+    W : torch.Tensor, shape (n_sats, n_sats)
+        Weight matrix (diagonal).
+
+    Returns
+    -------
+    dict
+        A dictionary containing PDOP, TDOP, GDOP, HDOP, and VDOP values.
+    """
+    n_sats = H.shape[0]
+    if n_sats < 4:
+        print("Warning: Not enough satellites for DOP calculation")
+        return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
+
+    try:
+        cov_matrix = torch.linalg.inv(H.T @ W @ H)
+    except torch.linalg.LinAlgError:
+        print("Warning: Singular matrix in DOP calculation")
+        return {'pdop': 999.9, 'tdop': 999.9, 'gdop': 999.9, 'hdop': 999.9, 'vdop': 999.9}
+
+    sigma_x2, sigma_y2, sigma_z2, sigma_t2 = (
+        cov_matrix[0, 0], cov_matrix[1, 1], 
+        cov_matrix[2, 2], cov_matrix[3, 3]
+    )
+
+    pdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2)
+    tdop = torch.sqrt(sigma_t2)
+    gdop = torch.sqrt(sigma_x2 + sigma_y2 + sigma_z2 + sigma_t2)
+
+    # Warning, breaks autograd - but so far isn't used in a way that requires gradients
+    ecef_to_enu = torch.tensor(coords.ecef_to_enu_rot(position.detach().numpy()), dtype=torch.float64)
+    pos_cov = cov_matrix[0:3, 0:3]
+    enu_cov = ecef_to_enu @ pos_cov @ ecef_to_enu.T
+
+    hdop = torch.sqrt(enu_cov[0, 0] + enu_cov[1, 1])
+    vdop = torch.sqrt(enu_cov[2, 2])
+
+    return {
+        'pdop': pdop.item(),
+        'tdop': tdop.item(),
+        'gdop': gdop.item(),
+        'hdop': hdop.item(),
+        'vdop': vdop.item()
+    }
+
 def position_torch(
     pr: torch.Tensor,
     prr: torch.Tensor,
@@ -578,16 +738,24 @@ def position_torch(
     Parameters
     ----------
     pr : torch.Tensor, shape (n_sats,)
+        Pseudoranges.
     prr : torch.Tensor, shape (n_sats,)
+        Pseudorange rates.
     sat_pos : torch.Tensor, shape (n_sats, 3)
+        Satellite positions.
     sat_vel : torch.Tensor, shape (n_sats, 3)
-    prev_estimate : dict with keys 'position', 'velocity', 'clock_bias', 'clock_drift'
-    Wx : torch.Tensor, weight matrix for position, shape (n_sats, n_sats)
-    Wv : torch.Tensor, weight matrix for velocity, shape (n_sats, n_sats)
+        Satellite velocities.
+    prev_estimate : dict | None
+        Previous estimate containing 'position', 'velocity', 'clock_bias', 'clock_drift'.
+    Wx : torch.Tensor | None
+        Weight matrix for position, shape (n_sats, n_sats).
+    Wv : torch.Tensor | None
+        Weight matrix for velocity, shape (n_sats, n_sats).
 
     Returns
     -------
-    new_pos : dict with torch.Tensor entries
+    dict
+        A dictionary containing the new position, velocity, clock bias, clock drift, and DOP values.
     """
     # Previous estimate fallback
     if prev_estimate is None:
@@ -668,6 +836,23 @@ def estimate_clock_bias_torch(
     xsat: torch.Tensor,
     pr: torch.Tensor
 ) -> torch.Tensor:
+    """
+    Estimate clock bias (c * delta_t) in metres via weighted pseudoinverse projection using truth geometry (torch version).
+
+    Parameters
+    ----------
+    x_true: torch.Tensor, shape (4,)
+        True state vector [x, y, z, clock_bias].
+    xsat: torch.Tensor, shape (n_sat, 3)
+        Satellite positions.
+    pr: torch.Tensor, shape (n_sat,)
+        Measured pseudoranges.
+
+    Returns
+    -------
+    torch.Tensor
+        Estimated clock bias in metres.
+    """
     W = torch.eye(pr.shape[0], dtype=pr.dtype, device=pr.device)
     # Ensure we only use true position
     x_pos = x_true[:3]
@@ -708,16 +893,24 @@ def estimate_clock_drift_torch(
     """
     Estimate clock drift (c * delta_t_dot) in metres per second
     via weighted pseudoinverse projection using truth geometry.
+    
+    Parameters
+    ----------
+    x_true: torch.Tensor, shape (4,)
+        True state vector [x, y, z, clock_bias].
+    v_true: torch.Tensor, shape (4,)
+        True velocity vector [vx, vy, vz, clock_drift].
+    xsat: torch.Tensor, shape (n_sat, 3)
+        Satellite positions.
+    vsat: torch.Tensor, shape (n_sat, 3)
+        Satellite velocities.
+    prr: torch.Tensor, shape (n_sat,)
+        Measured pseudorange rates.
 
-    Args:
-        x_true: (4,) true position state [x, y, z, c*dt]
-        v_true: (4,) true velocity state [vx, vy, vz, c*dtdot]
-        xsat:   (m, 3) satellite positions
-        vsat:   (m, 3) satellite velocities
-        prr:    (m,) measured pseudorange rates (m/s)
-
-    Returns:
-        delta_clock_drift_mps: scalar clock drift in metres per second
+    Returns
+    -------
+    torch.Tensor
+        Estimated clock drift in metres per second.
     """
 
     m = prr.shape[0]
@@ -760,25 +953,59 @@ def estimate_clock_drift_torch(
 
 
 class Kalman_filter:
+    """
+    GNSS loosely coupled Kalman filter for position, velocity, clock bias, and clock drift estimation.
+    """
+
     def __init__(
         self,
         # Process noise
-        sigma_acc = 2.0,       # m/s^2 - acceleration noise
-        sigma_b = 30.0,        # m - clock bias process noise
-        sigma_d = 0.5,         # m/s - clock drift process noise
+        sigma_acc: float = 2.0,
+        sigma_b: float = 30.0,
+        sigma_d: float = 0.5,
         # Measurement noise
-        sigma_p_h = 10.0,      # m - horizontal position measurement noise
-        sigma_p_v = 25.0,      # m - vertical position measurement noise (larger, GNSS geometry is worse vertically)
-        sigma_v = 0.5,         # m/s - velocity measurement noise
+        sigma_p_h: float = 10.0,
+        sigma_p_v: float = 25.0, # larger than horizontal, GNSS geometry is worse vertically
+        sigma_v: float = 0.5,
         # Initial uncertainty
-        sigma_p0 = 50.0,       # m - initial position uncertainty
-        sigma_v0 = 10.0,       # m/s - initial velocity uncertainty
-        sigma_b0 = 200.0,      # m - initial clock bias uncertainty
-        sigma_d0 = 2.0,        # m/s - initial clock drift uncertainty
+        sigma_p0: float = 50.0,
+        sigma_v0: float = 10.0,
+        sigma_b0: float = 200.0,
+        sigma_d0: float = 2.0,
         # Adaptive parameters
-        min_speed_threshold = 0.5,  # m/s - detect stationary
-        max_speed = 50.0,           # m/s (~180 km/h) - upper limit for cars
+        min_speed_threshold: float = 0.5,
+        max_speed: float = 50.0, # (~180 km/h) - upper limit for cars
     ):
+        """
+        Initialise the Kalman filter with given noise parameters and initial uncertainties.
+
+        Parameters
+        ----------
+        sigma_acc : float
+            Acceleration process noise standard deviation (m/s^2).
+        sigma_b : float
+            Clock bias process noise standard deviation (m).
+        sigma_d : float
+            Clock drift process noise standard deviation (m/s).
+        sigma_p_h : float
+            Horizontal position measurement noise standard deviation (m).
+        sigma_p_v : float
+            Vertical position measurement noise standard deviation (m).
+        sigma_v : float
+            Velocity measurement noise standard deviation (m/s).
+        sigma_p0 : float
+            Initial position uncertainty standard deviation (m).
+        sigma_v0 : float
+            Initial velocity uncertainty standard deviation (m/s).
+        sigma_b0 : float
+            Initial clock bias uncertainty standard deviation (m).
+        sigma_d0 : float
+            Initial clock drift uncertainty standard deviation (m/s).
+        min_speed_threshold : float
+            Minimum speed threshold to detect stationary state (m/s).
+        max_speed : float
+            Maximum expected speed for adaptive process noise scaling (m/s).
+        """
         self.initialised_ = False
         self.min_speed_threshold_ = min_speed_threshold
         self.max_speed_ = max_speed
@@ -819,6 +1046,23 @@ class Kalman_filter:
         self.P_[7, 7] = sigma_d0 * sigma_d0
  
     def _enu_noise_to_ecef(self, sigma_h: float, sigma_v: float, ecef_pos: np.ndarray) -> np.ndarray:
+        """
+        Convert noise from ENU to ECEF coordinates.
+
+        Parameters
+        ----------
+        sigma_h : float
+            Horizontal noise standard deviation (m).
+        sigma_v : float
+            Vertical noise standard deviation (m).
+        ecef_pos : np.ndarray, shape (3,)
+            Receiver position in ECEF coordinates (x, y, z).
+
+        Returns
+        -------
+        np.ndarray
+            3x3 covariance matrix in ECEF coordinates.
+        """
         # Rotation matrix from ENU to ECEF at this position
         R_enu_to_ecef = coords.enu_to_ecef_rot(ecef_pos)
  
@@ -828,7 +1072,25 @@ class Kalman_filter:
         # Rotate to ECEF: cov_ecef = R * cov_enu * R^T
         return R_enu_to_ecef @ cov_enu @ R_enu_to_ecef.T
  
-    def initialise(self, pos, vel, clock_bias, clock_drift):
+    def initialise(self, pos: np.ndarray, vel: np.ndarray, clock_bias: float, clock_drift: float) -> None:
+        """
+        Initialise internal state matricies with given position, velocity, clock bias, and clock drift.
+
+        Parameters
+        ----------
+        pos : np.ndarray, shape (3,)
+            Initial position in ECEF coordinates (x, y, z).
+        vel : np.ndarray, shape (3,)
+            Initial velocity in ECEF coordinates (vx, vy, vz).
+        clock_bias : float
+            Initial clock bias.
+        clock_drift : float
+            Initial clock drift.
+
+        Returns
+        -------
+        None
+        """
         self.x_[0:3, 0] = pos
         self.x_[3:6, 0] = vel
         self.x_[6, 0] = clock_bias
@@ -836,7 +1098,21 @@ class Kalman_filter:
         self.stationary_count_ = 0
         self.initialised_ = True
  
-    def predict(self, dt, current_speed=None):
+    def predict(self, dt: float, current_speed: float | None = None) -> None:
+        """
+        Predict the next state of the system.
+
+        Parameters
+        ----------
+        dt : float
+            Time step (s).
+        current_speed : float, optional
+            Current speed (m/s).
+
+        Returns
+        -------
+        None
+        """
         if not self.initialised_:
             return
  
@@ -878,15 +1154,41 @@ class Kalman_filter:
  
     def update(
         self,
-        pos,
-        vel,
-        clock_bias,
-        clock_drift,
-        hdop=None,
-        vdop=None,
-        satellite_count=None,
-        speed=None,
-    ):
+        pos: np.ndarray,
+        vel: np.ndarray,
+        clock_bias: float,
+        clock_drift: float,
+        hdop: float | None = None,
+        vdop: float | None = None,
+        satellite_count: int | None = None,
+        speed: float | None = None,
+    ) -> None:
+        """
+        Update the Kalman filter with a new position, velocity, clock bias, and clock drift measurement.
+
+        Parameters
+        ----------
+        pos : np.ndarray, shape (3,)
+            Measured position in ECEF coordinates (x, y, z).
+        vel : np.ndarray, shape (3,)
+            Measured velocity in ECEF coordinates (vx, vy, vz).
+        clock_bias : float
+            Measured clock bias.
+        clock_drift : float
+            Measured clock drift.
+        hdop : float, optional
+            Horizontal Dilution of Precision.
+        vdop : float, optional
+            Vertical Dilution of Precision.
+        satellite_count : int, optional
+            Number of satellites used in the measurement.
+        speed : float, optional
+            Current speed (m/s).
+
+        Returns
+        -------
+        None
+        """
         if not self.initialised_:
             self.initialise(pos, vel, clock_bias, clock_drift)
             return
@@ -935,14 +1237,46 @@ class Kalman_filter:
         self.P_ = I_KH.dot(self.P_).dot(I_KH.T) + K.dot(R).dot(K.T)
  
     def get_position(self):
+        """
+        Get the current estimated position from the Kalman filter state.
+
+        Returns
+        -------
+        np.ndarray
+            Estimated position in ECEF coordinates (x, y, z).
+        """
         return self.x_[0:3, 0].copy()
  
     def get_velocity(self):
+        """
+        Get the current estimated velocity from the Kalman filter state.
+
+        Returns
+        -------
+        np.ndarray
+            Estimated velocity in ECEF coordinates (vx, vy, vz).
+        """
         return self.x_[3:6, 0].copy()
  
     def get_clock_bias(self):
+        """
+        Get the current estimated clock bias from the Kalman filter state.
+
+        Returns
+        -------
+        float
+            Estimated clock bias.
+        """
         return float(self.x_[6, 0])
  
     def get_clock_drift(self):
+        """
+        Get the current estimated clock drift from the Kalman filter state.
+
+        Returns
+        -------
+        float
+            Estimated clock drift.
+        """
         return float(self.x_[7, 0])
     

@@ -8,6 +8,24 @@ from internals.preprocessing.hash_file import hash_file
 HASH_FILE = "dataset_stats_hash.json"
 
 def create_dataset_stats(base_path: str, output_file: str, hash_table: dict, per_file_hash: str) -> None:
+    """
+    Computes mean and standard deviation for each numeric column across all drive data files.
+
+    Parameters
+    ----------
+    base_path: str
+        The base directory containing drive data subdirectories.
+    output_file: str
+        The path where the dataset statistics CSV will be saved.
+    hash_table: dict
+        A dictionary to store hashes for caching purposes.
+    per_file_hash: str
+        A hash representing the current state of the input files.
+
+    Returns
+    -------
+    None
+    """
     hash = hash_file(__file__)
     joint_hash = hash + per_file_hash
     if "dataset_stats" in hash_table and hash_table["dataset_stats"] == joint_hash:

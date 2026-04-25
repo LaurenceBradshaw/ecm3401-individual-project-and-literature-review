@@ -1,11 +1,23 @@
 import numpy as np
 from pathlib import Path
 from internals import common
-from internals.drive_data import Drive_iterator
+from internals.drive_data import Drive, Drive_iterator
 from internals.constants import PR_COL, SAT_POS_COLS
 import internals.gnss_positioning as gp
 
-def compute_drive_max_residual(drive):
+def compute_drive_max_residual(drive: Drive) -> float:
+    """
+    Given a drive, compute the maximum norm of the pseudorange residuals across all epochs.
+
+    Parameters
+    ---------
+    drive: Drive
+
+    Returns
+    -------
+    float
+        The maximum norm of the pseudorange residuals for the drive.
+    """
     df, truth_df = drive.get_dataframes()
 
     residual_norms = []
@@ -16,14 +28,6 @@ def compute_drive_max_residual(drive):
         pr = epoch_df[PR_COL].to_numpy()
         sat_pos = epoch_df[SAT_POS_COLS].to_numpy()
 
-        # x = np.zeros(4, dtype=np.float64)
-        # x[0:3] = pos_truth.numpy().flatten()[0:3]
-        # x[3] = gp.estimate_clock_bias(
-        #     pos_truth.numpy().flatten(),
-        #     sat_pos,
-        #     pr
-        # )
-
         residual = gp.pr_residuals(pos_truth.numpy().flatten(), sat_pos, pr)
         residual_norms.append(np.linalg.norm(residual))
 
@@ -33,6 +37,21 @@ def compute_drive_max_residual(drive):
     return float(np.max(residual_norms))
 
 def remove_base_path(paths: list[str], base_path: str) -> list[str]:
+    """
+    Remove the base path from a list of paths to get relative paths.
+
+    Parameters
+    ----------
+    paths: list[str]
+        A list of file paths to be processed.
+    base_path: str
+        The base directory to be removed from the paths.
+
+    Returns
+    -------
+    list[str]
+        A list of relative paths.
+    """
     base = Path(base_path)
 
     return [
@@ -41,6 +60,22 @@ def remove_base_path(paths: list[str], base_path: str) -> list[str]:
     ]
 
 def find_test_set(drive_iter: Drive_iterator, base_path: str) -> list[str]:
+    """
+    Find a test set of drives based on their maximum pseudorange residuals.
+    Compute the maximum residual for each drive, sort them, and select a subset of drives using a doubling range.
+
+    Parameters
+    ----------
+    drive_iter: Drive_iterator
+        An iterator over the drives in the dataset.
+    base_path: str
+        The base directory containing drive data subdirectories.
+
+    Returns
+    -------
+    list[str]
+        A list of relative paths for the selected test drives.
+    """
     print("Computing max residuals for each drive to select test set...")
     drive_residuals = []
     for drive in drive_iter:
