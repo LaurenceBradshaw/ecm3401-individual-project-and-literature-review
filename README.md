@@ -87,7 +87,7 @@ Use the `--kf` flag to enable Kalman filter trajectory estimation, and use `-d <
 
 ## Outputs
 
-Running the project creates model checkpoints, evaluation folders, and preprocessing artifacts. Existing output directories in the repository show the expected structure for generated results.
+Running the project creates model checkpoints, evaluation folders, and preprocessing artifacts.
 
 ## Notes
 
